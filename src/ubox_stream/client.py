@@ -91,6 +91,8 @@ class P4PClient:
         self._bytes_written = 0
         self._rdt_parser: RDTParser | None = None
         self._video_callback: Callable[[bytes, avframe.AVFrame], None] | None = None
+        self.reported_framerate: int = 0
+        self._seen_iframe = False
 
     def connect(self, timeout: float = 30.0) -> bool:
         """Run the full connection handshake. Returns True on success."""
@@ -208,6 +210,7 @@ class P4PClient:
         if raw_dump:
             self._raw_dump_file = open(raw_dump, "wb")
 
+        self._capture_start: float | None = None
         start = time.time()
         keepalive_interval = 5.0
         last_keepalive = time.time()
@@ -217,7 +220,7 @@ class P4PClient:
                  output_file)
 
         try:
-            while self._running and (time.time() - start) < duration:
+            while self._running and (time.time() - (self._capture_start or start)) < duration:
                 self._recv_and_dispatch(timeout=0.1)
 
                 now = time.time()
@@ -255,6 +258,15 @@ class P4PClient:
 
     def _on_video_frame(self, data: bytes, frame: avframe.AVFrame):
         """Called by the RDT parser for each video frame."""
+        if not self.reported_framerate and frame.framerate:
+            self.reported_framerate = frame.framerate
+            log.info("Camera reports framerate: %d fps", frame.framerate)
+        if not self._seen_iframe:
+            if not frame.is_iframe:
+                return
+            self._seen_iframe = True
+            self._capture_start = time.time()
+            log.info("First I-frame received, starting capture")
         if self._video_file:
             self._video_file.write(data)
             self._video_file.flush()

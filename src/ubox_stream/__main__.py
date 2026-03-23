@@ -108,11 +108,12 @@ def main():
             else h265_path.rsplit(".", 1)[0] + ".mp4"
         logging.info("Remuxing to %s ...", mp4_path)
         try:
+            fps = str(client.reported_framerate or 15)
             subprocess.run([
                 "ffmpeg", "-y",
-                "-r", "15",
+                "-r", fps,
                 "-f", "hevc", "-i", h265_path,
-                "-c:v", "copy",
+                "-c:v", "hevc_videotoolbox", "-q:v", "65",
                 "-tag:v", "hvc1",
                 "-movflags", "+faststart",
                 mp4_path,
