@@ -38,6 +38,11 @@ enum P4P {
 
     static let avCmdStartVideo: UInt8 = 0x09
 
+    static let subQuery: UInt16 = 0x28
+    static let subRelay: UInt16 = 0x24
+    static let subKnock: UInt16 = 0x21
+    static let subAlive: UInt16 = 0x12
+
     static let streamSub: UInt8    = 0   // SD — camera's sub stream (lower resolution)
     static let streamMain: UInt8   = 1   // HD — camera's main stream (full resolution)
     static let streamLFSub: UInt8  = 2   // Low-framerate SD (used for multi-cam grid views)
@@ -110,26 +115,30 @@ extension P4P {
 // MARK: - Packet builders
 
 extension P4P {
-    /// Build a 60-byte query request packet (encrypted).
-    static func buildQueryRequest(uid: String) -> Data {
-        var pkt = Data(count: 60)
+    static let headerSize = 16
+
+    private static func makePacket(
+        size: Int, cmd: UInt16, sub: UInt16
+    ) -> Data {
+        var pkt = Data(count: size)
         pkt.writeUInt16LE(magic, at: 0)
         pkt.writeUInt16LE(version, at: 2)
-        pkt.writeUInt16LE(0x2C, at: 4)
-        pkt.writeUInt16LE(cmdQueryReq, at: 8)
-        pkt.writeUInt16LE(0x28, at: 10)
+        pkt.writeUInt16LE(UInt16(size - headerSize), at: 4)
+        pkt.writeUInt16LE(cmd, at: 8)
+        pkt.writeUInt16LE(sub, at: 10)
+        return pkt
+    }
+
+    /// Build a 60-byte query request packet (encrypted).
+    static func buildQueryRequest(uid: String) -> Data {
+        var pkt = makePacket(size: 60, cmd: cmdQueryReq, sub: subQuery)
         pkt.writeASCII(uid, at: 20, maxLength: 20)
         return Crypto.encode(pkt)
     }
 
     /// Build a 60-byte relay wakeup request (encrypted).
     static func buildRelayWakeupRequest(uid: String) -> Data {
-        var pkt = Data(count: 60)
-        pkt.writeUInt16LE(magic, at: 0)
-        pkt.writeUInt16LE(version, at: 2)
-        pkt.writeUInt16LE(0x2C, at: 4)
-        pkt.writeUInt16LE(cmdRlyWakeupReq, at: 8)
-        pkt.writeUInt16LE(0x24, at: 10)
+        var pkt = makePacket(size: 60, cmd: cmdRlyWakeupReq, sub: subRelay)
         pkt[16] = 0x01
         pkt[17] = 0x01
         pkt.writeASCII(uid, at: 20, maxLength: 20)
@@ -153,12 +162,7 @@ extension P4P {
         localIP: String = "0.0.0.0", localPort: UInt16 = 0,
         randomID: UInt32 = 0, streamType: UInt8 = streamMain
     ) -> Data {
-        var pkt = Data(count: 124)
-        pkt.writeUInt16LE(magic, at: 0)
-        pkt.writeUInt16LE(version, at: 2)
-        pkt.writeUInt16LE(0x6C, at: 4)
-        pkt.writeUInt16LE(cmdRlyStreamReq, at: 8)
-        pkt.writeUInt16LE(0x24, at: 10)
+        var pkt = makePacket(size: 124, cmd: cmdRlyStreamReq, sub: subRelay)
         pkt[16] = 0x01
 
         if localIP != "0.0.0.0" {
@@ -190,12 +194,7 @@ extension P4P {
         uid: String, password: String, username: String = "admin",
         sessionToken: UInt32 = 0, kcpConv: UInt32 = 0
     ) -> Data {
-        var pkt = Data(count: 84)
-        pkt.writeUInt16LE(magic, at: 0)
-        pkt.writeUInt16LE(version, at: 2)
-        pkt.writeUInt16LE(0x44, at: 4)
-        pkt.writeUInt16LE(cmdKnockRelay, at: 8)
-        pkt.writeUInt16LE(0x21, at: 10)
+        var pkt = makePacket(size: 84, cmd: cmdKnockRelay, sub: subKnock)
         pkt.writeASCII(uid, at: 0x10, maxLength: 20)
         pkt.writeASCII(password, at: 0x24, maxLength: 16)
         pkt.writeUInt32LE(sessionToken, at: 0x3c)
@@ -208,12 +207,7 @@ extension P4P {
     static func buildAlive(
         sessionToken: UInt32 = 0, conv: UInt32 = 0
     ) -> Data {
-        var pkt = Data(count: 36)
-        pkt.writeUInt16LE(magic, at: 0)
-        pkt.writeUInt16LE(version, at: 2)
-        pkt.writeUInt16LE(0x14, at: 4)
-        pkt.writeUInt16LE(cmdAlive, at: 8)
-        pkt.writeUInt16LE(0x12, at: 10)
+        var pkt = makePacket(size: 36, cmd: cmdAlive, sub: subAlive)
         if conv != 0 {
             pkt.writeUInt32LE(conv, at: 24)
         }
@@ -230,11 +224,7 @@ extension P4P {
     static func buildAVStartVideo(
         channel: UInt8 = 0, streamType: UInt8 = streamMain
     ) -> Data {
-        var pkt = Data(count: 48)
-        pkt.writeUInt16LE(magic, at: 0)
-        pkt.writeUInt16LE(version, at: 2)
-        pkt.writeUInt16LE(0x20, at: 4)
-        pkt.writeUInt16LE(cmdAVCtrl, at: 8)
+        var pkt = makePacket(size: 48, cmd: cmdAVCtrl, sub: 0)
         pkt[16] = avCmdStartVideo
         pkt[17] = channel
         pkt[18] = streamType

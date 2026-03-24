@@ -554,7 +554,7 @@ final class P4PClient {
         pkt.writeUInt16LE(P4P.version, at: 2)
         pkt.writeUInt16LE(UInt16(totalKCP.count), at: 4)
         pkt.writeUInt16LE(P4P.cmdKCPAck, at: 8)
-        pkt.writeUInt16LE(0x21, at: 10)
+        pkt.writeUInt16LE(P4P.subKnock, at: 10)
         pkt.append(totalKCP)
 
         let encrypted = Crypto.encode(pkt)
