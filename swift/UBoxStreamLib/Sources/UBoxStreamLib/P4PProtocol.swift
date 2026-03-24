@@ -8,18 +8,23 @@ import Darwin
 
 // MARK: - Endpoint
 
-struct Endpoint: Equatable, CustomStringConvertible {
-    let host: String
-    let port: UInt16
+public struct Endpoint: Equatable, CustomStringConvertible {
+    public let host: String
+    public let port: UInt16
 
-    var description: String { "\(host):\(port)" }
+    public init(host: String, port: UInt16) {
+        self.host = host
+        self.port = port
+    }
+
+    public var description: String { "\(host):\(port)" }
 }
 
 // MARK: - Constants
 
-enum P4P {
-    static let magic: UInt16   = 0x1807
-    static let version: UInt16 = 0x0010
+public enum P4P {
+    public static let magic: UInt16   = 0x1807
+    public static let version: UInt16 = 0x0010
 
     static let cmdQueryReq: UInt16     = 0x1051
     static let cmdQueryRsp: UInt16     = 0x1052
@@ -43,10 +48,10 @@ enum P4P {
     static let subKnock: UInt16 = 0x21
     static let subAlive: UInt16 = 0x12
 
-    static let streamSub: UInt8    = 0   // SD — camera's sub stream (lower resolution)
-    static let streamMain: UInt8   = 1   // HD — camera's main stream (full resolution)
-    static let streamLFSub: UInt8  = 2   // Low-framerate SD (used for multi-cam grid views)
-    static let streamLFMain: UInt8 = 3   // Low-framerate HD
+    public static let streamSub: UInt8    = 0   // SD — camera's sub stream (lower resolution)
+    public static let streamMain: UInt8   = 1   // HD — camera's main stream (full resolution)
+    public static let streamLFSub: UInt8  = 2   // Low-framerate SD (used for multi-cam grid views)
+    public static let streamLFMain: UInt8 = 3   // Low-framerate HD
 
     static let codecVideoMPEG4: UInt16 = 76
     static let codecVideoH263: UInt16  = 77

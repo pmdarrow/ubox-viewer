@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import UBoxStreamLib
 
 enum StreamQuality: String, ExpressibleByArgument, CaseIterable {
     case hd, sd

@@ -33,21 +33,21 @@ enum P4PError: LocalizedError {
     }
 }
 
-final class P4PClient {
-    enum State: Int, Comparable {
+public final class P4PClient {
+    public enum State: Int, Comparable {
         case idle, querying, wakingRelay, streamRequested, knocking, connected
 
-        static func < (lhs: State, rhs: State) -> Bool {
+        public static func < (lhs: State, rhs: State) -> Bool {
             lhs.rawValue < rhs.rawValue
         }
     }
 
-    let uid: String
-    let password: String
-    let username: String
-    let streamType: UInt8
+    public let uid: String
+    public let password: String
+    public let username: String
+    public let streamType: UInt8
 
-    private(set) var state: State = .idle
+    public private(set) var state: State = .idle
     private let socket: UDPSocket
 
     private var relayServers: [Endpoint] = []
@@ -65,15 +65,16 @@ final class P4PClient {
     private var bytesWritten = 0
     private var rdtParser: RDTParser?
     private var videoCallback: ((Data, AVFrame) -> Void)?
-    private(set) var reportedFramerate: UInt8 = 0
+    public private(set) var reportedFramerate: UInt8 = 0
     private var seenIFrame = false
     private var captureStart: Date?
 
     private var wakeupResponsesReceived = 0
+    private var streamingQueue: DispatchQueue?
 
     private static var resolvedMasters: [Endpoint] = []
 
-    init(
+    public init(
         uid: String, password: String,
         username: String = "admin",
         streamType: UInt8 = P4P.streamMain
@@ -89,7 +90,7 @@ final class P4PClient {
     // MARK: - Public API
 
     /// Run the full connection handshake. Returns `true` on success.
-    func connect(timeout: TimeInterval = 30.0) -> Bool {
+    public func connect(timeout: TimeInterval = 30.0) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
 
         Log.info("Phase 1: Querying master servers for relay info...")
@@ -189,7 +190,7 @@ final class P4PClient {
     }
 
     /// Send AV control command to start video streaming.
-    func startVideo(channel: UInt8 = 0) {
+    public func startVideo(channel: UInt8 = 0) {
         guard let endpoint = relayEndpoint else {
             Log.error("Not connected, cannot start video")
             return
@@ -211,7 +212,7 @@ final class P4PClient {
     }
 
     /// Main receive loop — collects video data and writes clean H.265.
-    func recvLoop(
+    public func recvLoop(
         outputFile: String = "output.h265",
         rawDump: String? = nil,
         duration: TimeInterval = 30.0
@@ -280,13 +281,54 @@ final class P4PClient {
         Log.info("Done. \(vf) video frames, \(bytesWritten) bytes written to \(outputFile)")
     }
 
-    func close() {
+    public func close() {
         running = false
         videoFile?.closeFile()
         videoFile = nil
         rawDumpFile?.closeFile()
         rawDumpFile = nil
         socket.close()
+    }
+
+    /// Start streaming video on a background thread, delivering H.265 data via callback.
+    public func startStreaming(onFrame: @escaping (Data, AVFrame) -> Void) {
+        running = true
+        seenIFrame = false
+        videoCallback = onFrame
+
+        rdtParser = RDTParser(onVideo: { [weak self] data, frame in
+            self?.onVideoFrame(data, frame)
+        })
+
+        let queue = DispatchQueue(label: "com.ubox.stream", qos: .userInitiated)
+        streamingQueue = queue
+
+        queue.async { [weak self] in
+            guard let self else { return }
+            var lastKeepalive = Date()
+
+            while self.running {
+                self.recvAndDispatch(timeout: 0.05)
+
+                let now = Date()
+                if now.timeIntervalSince(lastKeepalive) > 5.0 {
+                    let alivePkt = P4P.buildAlive(
+                        sessionToken: self.sessionToken, conv: self.kcpConv
+                    )
+                    if let endpoint = self.relayEndpoint {
+                        self.socket.send(alivePkt, to: endpoint)
+                    }
+                    lastKeepalive = now
+                }
+            }
+        }
+    }
+
+    /// Stop the background streaming loop.
+    public func stopStreaming() {
+        running = false
+        videoCallback = nil
+        rdtParser = nil
     }
 
     // MARK: - DNS resolution

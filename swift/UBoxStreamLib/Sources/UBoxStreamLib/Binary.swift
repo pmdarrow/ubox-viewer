@@ -1,6 +1,6 @@
 import Foundation
 
-extension Data {
+public extension Data {
     func uint16LE(at offset: Int) -> UInt16 {
         UInt16(self[startIndex + offset]) |
         UInt16(self[startIndex + offset + 1]) << 8

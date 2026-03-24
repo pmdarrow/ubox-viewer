@@ -10,28 +10,28 @@
 /// SPS NAL unit after decoding.
 import Foundation
 
-struct AVFrame {
-    let codecID: UInt16
-    let flags: UInt8
-    let camIndex: UInt8
-    let onlineNum: UInt8
-    let recordStatus: UInt8
-    let temperature: Int16
-    let varbit: UInt8
-    let playSeq: UInt8
-    let resolution: UInt8
-    let framerate: UInt8
-    let timestamp: UInt32
-    let data: Data
+public struct AVFrame {
+    public let codecID: UInt16
+    public let flags: UInt8
+    public let camIndex: UInt8
+    public let onlineNum: UInt8
+    public let recordStatus: UInt8
+    public let temperature: Int16
+    public let varbit: UInt8
+    public let playSeq: UInt8
+    public let resolution: UInt8
+    public let framerate: UInt8
+    public let timestamp: UInt32
+    public let data: Data
 
-    var isIFrame: Bool { (flags & 0x01) != 0 }
+    public var isIFrame: Bool { (flags & 0x01) != 0 }
 
-    var isVideo: Bool {
+    public var isVideo: Bool {
         [P4P.codecVideoH264, P4P.codecVideoH265,
          P4P.codecVideoMPEG4, P4P.codecVideoMJPEG].contains(codecID)
     }
 
-    var codecName: String {
+    public var codecName: String {
         switch codecID {
         case P4P.codecVideoH264:  return "H.264"
         case P4P.codecVideoH265:  return "H.265"

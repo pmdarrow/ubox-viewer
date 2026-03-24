@@ -18,13 +18,25 @@ The protocol was reverse engineered using three approaches:
 
 ## Build
 
+### CLI
+
 ```
+cd UBoxStreamLib
 swift build -c release
 ```
 
+### Viewer app
+
+Open `UBoxViewer/UBoxViewer.xcodeproj` in Xcode and run the UBoxViewer scheme.
+
+Credentials can be pre-filled via `UBOX_UID` and `UBOX_PASSWORD` environment variables (set in the scheme's Run configuration), or entered manually in the UI.
+
 ## Usage
 
+### CLI recorder
+
 ```
+cd UBoxStreamLib
 swift run ubox-stream --uid YOUR_CAMERA_UID --password YOUR_DEVICE_PASSWORD
 swift run ubox-stream --uid ... --password ... --quality sd --duration 60
 swift run ubox-stream --uid ... --password ... --mp4
@@ -33,6 +45,7 @@ swift run ubox-stream --uid ... --password ... --mp4
 With credentials from 1Password (`UBIA Camera` item):
 
 ```bash
+cd UBoxStreamLib
 swift run ubox-stream \
   --uid "$(op read 'op://Personal/UBIA Camera/username')" \
   --password "$(op read 'op://Personal/UBIA Camera/password')"

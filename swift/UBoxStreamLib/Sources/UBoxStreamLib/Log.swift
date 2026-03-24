@@ -1,16 +1,16 @@
 import Foundation
 
-enum LogLevel: Int, Comparable {
+public enum LogLevel: Int, Comparable {
     case debug = 0
     case info = 1
     case warning = 2
     case error = 3
 
-    static func < (lhs: LogLevel, rhs: LogLevel) -> Bool {
+    public static func < (lhs: LogLevel, rhs: LogLevel) -> Bool {
         lhs.rawValue < rhs.rawValue
     }
 
-    var label: String {
+    public var label: String {
         switch self {
         case .debug: return "DEBUG"
         case .info: return "INFO"
@@ -20,8 +20,8 @@ enum LogLevel: Int, Comparable {
     }
 }
 
-enum Log {
-    static var level: LogLevel = .info
+public enum Log {
+    public static var level: LogLevel = .info
 
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
@@ -40,19 +40,19 @@ enum Log {
         FileHandle.standardError.write(Data(line.utf8))
     }
 
-    static func debug(_ msg: String, file: String = #file) {
+    public static func debug(_ msg: String, file: String = #file) {
         emit(.debug, msg, file: file)
     }
 
-    static func info(_ msg: String, file: String = #file) {
+    public static func info(_ msg: String, file: String = #file) {
         emit(.info, msg, file: file)
     }
 
-    static func warning(_ msg: String, file: String = #file) {
+    public static func warning(_ msg: String, file: String = #file) {
         emit(.warning, msg, file: file)
     }
 
-    static func error(_ msg: String, file: String = #file) {
+    public static func error(_ msg: String, file: String = #file) {
         emit(.error, msg, file: file)
     }
 }
