@@ -3,15 +3,15 @@ import SwiftUI
 import UBoxStreamLib
 
 struct ContentView: View {
-    @State private var uid = ProcessInfo.processInfo.environment["UBOX_UID"] ?? ""
-    @State private var password = ProcessInfo.processInfo.environment["UBOX_PASSWORD"] ?? ""
+    @State private var uid = Credentials.load()["UBOX_UID"] ?? ""
+    @State private var password = Credentials.load()["UBOX_PASSWORD"] ?? ""
     @State private var quality: UInt8 = P4P.streamMain
     @State private var status = "Disconnected"
     @State private var isConnected = false
     @State private var isConnecting = false
 
     @State private var client: P4PClient?
-    @State private var parser = H265Parser()
+    @State private var decoder = H265Decoder()
     @State private var displayLayer = AVSampleBufferDisplayLayer()
 
     var body: some View {
@@ -53,6 +53,11 @@ struct ContentView: View {
             }
             .padding(12)
         }
+        .onAppear {
+            if !uid.isEmpty && !password.isEmpty {
+                connect()
+            }
+        }
     }
 
     private func connect() {
@@ -61,6 +66,27 @@ struct ContentView: View {
         let currentUID = uid
         let currentPassword = password
         let currentQuality = quality
+
+        decoder.onDecodedFrame = { pixelBuffer in
+            do {
+                let formatDesc = try CMVideoFormatDescription(imageBuffer: pixelBuffer)
+                let timing = CMSampleTimingInfo(
+                    duration: .invalid,
+                    presentationTimeStamp: .invalid,
+                    decodeTimeStamp: .invalid
+                )
+                let sampleBuffer = try CMSampleBuffer(
+                    imageBuffer: pixelBuffer,
+                    formatDescription: formatDesc,
+                    sampleTiming: timing
+                )
+                let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                    sampleBuffer, createIfNecessary: true
+                ) as? [NSMutableDictionary]
+                attachments?.first?[kCMSampleAttachmentKey_DisplayImmediately] = true
+                displayLayer.enqueue(sampleBuffer)
+            } catch {}
+        }
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -80,12 +106,7 @@ struct ContentView: View {
 
                 c.startVideo()
                 c.startStreaming { data, frame in
-                    let samples = parser.parse(data)
-                    for sample in samples {
-                        DispatchQueue.main.async {
-                            displayLayer.enqueue(sample)
-                        }
-                    }
+                    decoder.decode(data)
                 }
 
                 DispatchQueue.main.async {
@@ -111,5 +132,39 @@ struct ContentView: View {
         status = "Disconnected"
 
         displayLayer.flushAndRemoveImage()
+        decoder.reset()
+    }
+}
+
+private enum Credentials {
+    static func load() -> [String: String] {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        var dir = url
+        for _ in 0..<5 {
+            let file = dir.appendingPathComponent(".credentials")
+            if let contents = try? String(contentsOf: file, encoding: .utf8) {
+                return parse(contents)
+            }
+            dir = dir.deletingLastPathComponent()
+        }
+        return [:]
+    }
+
+    private static func parse(_ text: String) -> [String: String] {
+        var result: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+            if let eq = trimmed.firstIndex(of: "=") {
+                let key = String(trimmed[trimmed.startIndex..<eq])
+                let val = String(trimmed[trimmed.index(after: eq)...])
+                result[key] = val
+            }
+        }
+        return result
     }
 }

@@ -10,14 +10,14 @@
 		A1000001 /* UBoxViewerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001 /* UBoxViewerApp.swift */; };
 		A1000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* ContentView.swift */; };
 		A1000003 /* VideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003 /* VideoView.swift */; };
-		A1000004 /* H265Parser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000004 /* H265Parser.swift */; };
+		A1000004 /* H265Decoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000004 /* H265Decoder.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A2000001 /* UBoxViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UBoxViewerApp.swift; sourceTree = "<group>"; };
 		A2000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A2000003 /* VideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoView.swift; sourceTree = "<group>"; };
-		A2000004 /* H265Parser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H265Parser.swift; sourceTree = "<group>"; };
+		A2000004 /* H265Decoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H265Decoder.swift; sourceTree = "<group>"; };
 		A2000005 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000010 /* UBoxViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = UBoxViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000020 /* UBoxStreamLib */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = UBoxStreamLib; path = ../UBoxStreamLib; sourceTree = "<group>"; };
@@ -49,7 +49,7 @@
 				A2000001 /* UBoxViewerApp.swift */,
 				A2000002 /* ContentView.swift */,
 				A2000003 /* VideoView.swift */,
-				A2000004 /* H265Parser.swift */,
+				A2000004 /* H265Decoder.swift */,
 				A2000005 /* Info.plist */,
 			);
 			path = UBoxViewer;
@@ -132,7 +132,7 @@
 				A1000001 /* UBoxViewerApp.swift in Sources */,
 				A1000002 /* ContentView.swift in Sources */,
 				A1000003 /* VideoView.swift in Sources */,
-				A1000004 /* H265Parser.swift in Sources */,
+				A1000004 /* H265Decoder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -198,7 +198,7 @@
 					"@executable_path/../Frameworks",
 				);
 				OTHER_CODE_SIGN_FLAGS = "--deep";
-				PRODUCT_BUNDLE_IDENTIFIER = com.ubox.viewer;
+				PRODUCT_BUNDLE_IDENTIFIER = com.peterdarrow.ubox-viewer;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 			};
@@ -217,7 +217,7 @@
 					"@executable_path/../Frameworks",
 				);
 				OTHER_CODE_SIGN_FLAGS = "--deep";
-				PRODUCT_BUNDLE_IDENTIFIER = com.ubox.viewer;
+				PRODUCT_BUNDLE_IDENTIFIER = com.peterdarrow.ubox-viewer;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 			};
