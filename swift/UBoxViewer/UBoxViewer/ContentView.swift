@@ -13,7 +13,6 @@ struct ContentView: View {
     @State private var client: P4PClient?
     @State private var decoder = H265Decoder()
     @State private var displayLayer = AVSampleBufferDisplayLayer()
-    @State private var pacer: FramePacer?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -68,10 +67,40 @@ struct ContentView: View {
         let currentPassword = password
         let currentQuality = quality
 
-        let p = FramePacer(displayLayer: displayLayer)
+        var timebase: CMTimebase?
+        CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(),
+            timebaseOut: &timebase
+        )
+        if let timebase {
+            displayLayer.controlTimebase = timebase
+            CMTimebaseSetTime(timebase, time: .zero)
+            CMTimebaseSetRate(timebase, rate: 1.0)
+        }
+
+        var nextPTS = CMTime.zero
+        var frameDuration = CMTime(value: 1, timescale: 15)
 
         decoder.onDecodedFrame = { pixelBuffer in
-            p.enqueue(pixelBuffer)
+            if let timebase {
+                let now = CMTimebaseGetTime(timebase)
+                if nextPTS < now { nextPTS = now }
+            }
+            let pts = nextPTS
+            nextPTS = CMTimeAdd(nextPTS, frameDuration)
+
+            guard let formatDesc = try? CMVideoFormatDescription(imageBuffer: pixelBuffer),
+                  let sampleBuffer = try? CMSampleBuffer(
+                      imageBuffer: pixelBuffer,
+                      formatDescription: formatDesc,
+                      sampleTiming: CMSampleTimingInfo(
+                          duration: frameDuration,
+                          presentationTimeStamp: pts,
+                          decodeTimeStamp: .invalid
+                      )
+                  ) else { return }
+            displayLayer.enqueue(sampleBuffer)
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
@@ -93,14 +122,13 @@ struct ContentView: View {
                 c.startVideo()
                 c.startStreaming { data, frame in
                     if frame.framerate > 0 {
-                        p.start(fps: Double(frame.framerate))
+                        frameDuration = CMTime(value: 1, timescale: Int32(frame.framerate))
                     }
                     decoder.decode(data)
                 }
 
                 DispatchQueue.main.async {
                     client = c
-                    pacer = p
                     isConnected = true
                     isConnecting = false
                     status = "Connected"
@@ -118,86 +146,12 @@ struct ContentView: View {
         client?.stopStreaming()
         client?.close()
         client = nil
-        pacer?.stop()
-        pacer = nil
         isConnected = false
         status = "Disconnected"
 
+        displayLayer.controlTimebase = nil
         displayLayer.flushAndRemoveImage()
         decoder.reset()
-    }
-}
-
-/// Smooths jittery frame delivery by queuing decoded frames and presenting
-/// them at a fixed interval tied to the camera's framerate.
-private final class FramePacer {
-    private let displayLayer: AVSampleBufferDisplayLayer
-    private var queue: [CVPixelBuffer] = []
-    private let lock = NSLock()
-    private var timer: DispatchSourceTimer?
-    private var started = false
-    private let maxQueueSize = 6
-
-    init(displayLayer: AVSampleBufferDisplayLayer) {
-        self.displayLayer = displayLayer
-    }
-
-    /// Thread-safe, idempotent — only the first call actually creates the timer.
-    func start(fps: Double) {
-        lock.lock()
-        guard !started else { lock.unlock(); return }
-        started = true
-        lock.unlock()
-
-        let interval = 1.0 / fps
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            let t = DispatchSource.makeTimerSource(queue: .main)
-            t.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(2))
-            t.setEventHandler { [weak self] in self?.presentNext() }
-            t.resume()
-            self.timer = t
-        }
-    }
-
-    func stop() {
-        timer?.cancel()
-        timer = nil
-        lock.lock()
-        started = false
-        queue.removeAll()
-        lock.unlock()
-    }
-
-    func enqueue(_ pixelBuffer: CVPixelBuffer) {
-        lock.lock()
-        while queue.count >= maxQueueSize { queue.removeFirst() }
-        queue.append(pixelBuffer)
-        lock.unlock()
-    }
-
-    private func presentNext() {
-        lock.lock()
-        guard !queue.isEmpty else { lock.unlock(); return }
-        let pixelBuffer = queue.removeFirst()
-        lock.unlock()
-
-        guard let formatDesc = try? CMVideoFormatDescription(imageBuffer: pixelBuffer),
-              let sampleBuffer = try? CMSampleBuffer(
-                  imageBuffer: pixelBuffer,
-                  formatDescription: formatDesc,
-                  sampleTiming: CMSampleTimingInfo(
-                      duration: .invalid,
-                      presentationTimeStamp: .invalid,
-                      decodeTimeStamp: .invalid
-                  )
-              ) else { return }
-
-        let attachments = CMSampleBufferGetSampleAttachmentsArray(
-            sampleBuffer, createIfNecessary: true
-        ) as? [NSMutableDictionary]
-        attachments?.first?[kCMSampleAttachmentKey_DisplayImmediately] = true
-        displayLayer.enqueue(sampleBuffer)
     }
 }
 
