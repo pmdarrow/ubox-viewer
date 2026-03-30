@@ -6,9 +6,9 @@ Connects to a UBIA camera via relay servers and dumps a clean H.265
 elementary stream (optionally remuxed to MP4).
 
 Usage:
-    ubox-viewer --uid YOUR_CAMERA_UID --password YOUR_DEVICE_PASSWORD
-    ubox-viewer --uid ... --password ... --quality sd --duration 60
-    ubox-viewer --uid ... --password ... --mp4
+    ubox-stream --uid YOUR_CAMERA_UID --password YOUR_DEVICE_PASSWORD
+    ubox-stream --uid ... --password ... --quality sd --duration 60
+    ubox-stream --uid ... --password ... --mp4
 """
 import argparse
 import logging

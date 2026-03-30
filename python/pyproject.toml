@@ -1,11 +1,11 @@
 [project]
-name = "ubox-viewer"
+name = "ubox-stream"
 version = "0.1.0"
 description = "UBIA P4P camera stream client"
 requires-python = ">=3.11"
 
 [project.scripts]
-ubox-viewer = "ubox_stream.__main__:main"
+ubox-stream = "ubox_stream.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
