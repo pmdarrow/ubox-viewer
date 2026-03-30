@@ -16,7 +16,7 @@ enum StreamQuality: String, ExpressibleByArgument, CaseIterable {
 @main
 struct UBoxStream: ParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "ubox-stream",
+        commandName: "ubox-viewer",
         abstract: "Connect to UBIA camera and dump video stream"
     )
 

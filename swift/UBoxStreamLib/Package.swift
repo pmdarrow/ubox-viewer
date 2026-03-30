@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "ubox-stream",
+    name: "ubox-viewer",
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "UBoxStreamLib", targets: ["UBoxStreamLib"]),
@@ -16,7 +16,7 @@ let package = Package(
             path: "Sources/UBoxStreamLib"
         ),
         .executableTarget(
-            name: "ubox-stream",
+            name: "ubox-viewer",
             dependencies: [
                 "UBoxStreamLib",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),

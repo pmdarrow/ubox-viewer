@@ -3,6 +3,6 @@ revision = 3
 requires-python = ">=3.11"
 
 [[package]]
-name = "ubox-stream"
+name = "ubox-viewer"
 version = "0.1.0"
 source = { editable = "." }
