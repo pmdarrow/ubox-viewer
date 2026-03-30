@@ -199,7 +199,7 @@
 				);
 				OTHER_CODE_SIGN_FLAGS = "--deep";
 				PRODUCT_BUNDLE_IDENTIFIER = com.peterdarrow.ubox-viewer;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "UBox Viewer";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -218,7 +218,7 @@
 				);
 				OTHER_CODE_SIGN_FLAGS = "--deep";
 				PRODUCT_BUNDLE_IDENTIFIER = com.peterdarrow.ubox-viewer;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "UBox Viewer";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
