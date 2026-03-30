@@ -7,3 +7,9 @@ The cameras use a proprietary protocol (UBIA P4P) to stream H.265 video through 
 - **[UBoxViewer](swift/UBoxViewer/)** — Native macOS viewer app for live streaming
 - **[UBoxStreamLib](swift/UBoxStreamLib/)** — Swift library and CLI for connecting to cameras and recording streams
 - **[Python client](python/)** — Python library and CLI for connecting to cameras and recording streams
+
+## Security disclaimer
+
+These cameras offer **no meaningful encryption** for video streams. The P4P protocol uses a trivial obfuscation cipher (bit-shifts, XOR, byte swaps) with no key exchange — anyone with access to the network traffic or UBIA's relay servers can decode the video in real time. The full cipher implementation is public in this repository.
+
+These cameras are fine for non-sensitive use cases like wildlife monitoring or package delivery alerts. Do not rely on them for anything you would consider private.
