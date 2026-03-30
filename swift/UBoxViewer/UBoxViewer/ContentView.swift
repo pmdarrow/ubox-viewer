@@ -14,6 +14,9 @@ struct ContentView: View {
     @State private var decoder = H265Decoder()
     @State private var displayLayer = AVSampleBufferDisplayLayer()
 
+    @State private var streamStart: Date?
+    @State private var bytesReceived: Int = 0
+
     var body: some View {
         VStack(spacing: 0) {
             VideoView(displayLayer: displayLayer)
@@ -21,20 +24,12 @@ struct ContentView: View {
                 .background(.black)
 
             HStack(spacing: 12) {
-                TextField("Camera UID", text: $uid)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 200)
-
-                SecureField("Password", text: $password)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 140)
-
-                Picker("Quality", selection: $quality) {
+                Picker("", selection: $quality) {
                     Text("HD").tag(P4P.streamMain)
                     Text("SD").tag(P4P.streamSub)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 100)
+                .fixedSize()
 
                 Button(isConnected ? "Disconnect" : "Connect") {
                     if isConnected {
@@ -43,13 +38,19 @@ struct ContentView: View {
                         connect()
                     }
                 }
-                .disabled(isConnecting || (!isConnected && (uid.isEmpty || password.isEmpty)))
+                .disabled(isConnecting)
                 .keyboardShortcut(.return, modifiers: .command)
+                .fixedSize()
 
-                Text(status)
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                Spacer()
+
+                if isConnected {
+                    streamStats
+                } else {
+                    Text(status)
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
             }
             .padding(12)
         }
@@ -57,6 +58,20 @@ struct ContentView: View {
             if !uid.isEmpty && !password.isEmpty {
                 connect()
             }
+        }
+    }
+
+    private var streamStats: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let elapsed = streamStart.map { context.date.timeIntervalSince($0) } ?? 0
+            let bytes = bytesReceived
+
+            HStack(spacing: 12) {
+                Label(formatDuration(elapsed), systemImage: "record.circle")
+                Label(formatBytes(bytes), systemImage: "arrow.down.circle")
+            }
+            .font(.system(.body, design: .monospaced))
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -125,12 +140,17 @@ struct ContentView: View {
                         frameDuration = CMTime(value: 1, timescale: Int32(frame.framerate))
                     }
                     decoder.decode(data)
+                    DispatchQueue.main.async {
+                        bytesReceived = c.bytesReceived
+                    }
                 }
 
                 DispatchQueue.main.async {
                     client = c
                     isConnected = true
                     isConnecting = false
+                    streamStart = Date()
+                    bytesReceived = 0
                     status = "Connected"
                 }
             } catch {
@@ -147,11 +167,34 @@ struct ContentView: View {
         client?.close()
         client = nil
         isConnected = false
+        streamStart = nil
+        bytesReceived = 0
         status = "Disconnected"
 
         displayLayer.controlTimebase = nil
         displayLayer.flushAndRemoveImage()
         decoder.reset()
+    }
+
+    private func formatDuration(_ interval: TimeInterval) -> String {
+        let total = Int(interval)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%d:%02d", m, s)
+    }
+
+    private func formatBytes(_ bytes: Int) -> String {
+        if bytes < 1_000_000 {
+            return String(format: "%.0f KB", Double(bytes) / 1_000)
+        } else if bytes < 1_000_000_000 {
+            return String(format: "%.1f MB", Double(bytes) / 1_000_000)
+        } else {
+            return String(format: "%.2f GB", Double(bytes) / 1_000_000_000)
+        }
     }
 }
 

@@ -66,6 +66,7 @@ public final class P4PClient {
     private var rdtParser: RDTParser?
     private var videoCallback: ((Data, AVFrame) -> Void)?
     public private(set) var reportedFramerate: UInt8 = 0
+    public private(set) var bytesReceived: Int = 0
     private var seenIFrame = false
     private var captureStart: Date?
 
@@ -408,6 +409,7 @@ public final class P4PClient {
         guard socket.waitForData(timeout: timeout) else { return }
         while let (data, endpoint) = socket.receive() {
             guard data.count >= 4 else { continue }
+            bytesReceived += data.count
             handlePacket(data, from: endpoint)
         }
     }
