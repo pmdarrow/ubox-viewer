@@ -22,6 +22,26 @@ public enum LogLevel: Int, Comparable {
 
 public enum Log {
     public static var level: LogLevel = .info
+    private static var logFile: FileHandle? = {
+        let dir = FileManager.default.urls(
+            for: .cachesDirectory, in: .userDomainMask
+        ).first!.appendingPathComponent("UBoxStream")
+        try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true
+        )
+        let path = dir.appendingPathComponent("stream.log").path
+        FileManager.default.createFile(atPath: path, contents: nil)
+        let handle = FileHandle(forWritingAtPath: path)
+        handle?.seekToEndOfFile()
+        return handle
+    }()
+
+    /// Path to the current log file.
+    public static var logFilePath: String {
+        FileManager.default.urls(
+            for: .cachesDirectory, in: .userDomainMask
+        ).first!.appendingPathComponent("UBoxStream/stream.log").path
+    }
 
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
@@ -37,7 +57,9 @@ public enum Log {
         let module = URL(fileURLWithPath: file)
             .deletingPathExtension().lastPathComponent
         let line = "\(time) [\(level.label)] \(module): \(message)\n"
-        FileHandle.standardError.write(Data(line.utf8))
+        let data = Data(line.utf8)
+        FileHandle.standardError.write(data)
+        logFile?.write(data)
     }
 
     public static func debug(_ msg: String, file: String = #file) {

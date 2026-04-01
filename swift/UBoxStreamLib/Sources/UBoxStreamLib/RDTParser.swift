@@ -37,6 +37,11 @@ final class RDTParser {
         parseBlocks()
     }
 
+    /// Discard buffered data (e.g. after skipping lost KCP packets).
+    func reset() {
+        buffer.removeAll()
+    }
+
     // MARK: - Private
 
     private func readUInt16LE(at offset: Int) -> UInt16 {

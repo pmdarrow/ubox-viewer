@@ -58,6 +58,7 @@ public final class P4PClient {
     private var kcpRecvBuf: [UInt32: Data] = [:]
     private var kcpNextSN: UInt32 = 0
     private var kcpUNA: UInt32 = 0
+    private var kcpLastAdvance: Date = Date()
     private var running = false
 
     private var videoFile: FileHandle?
@@ -71,6 +72,9 @@ public final class P4PClient {
     private var captureStart: Date?
 
     private var wakeupResponsesReceived = 0
+    private var keepalivesReceived = 0
+    private var keepalivesSent = 0
+    private var lastDataReceived: Date?
     private var streamingQueue: DispatchQueue?
 
     private static var resolvedMasters: [Endpoint] = []
@@ -307,6 +311,13 @@ public final class P4PClient {
         queue.async { [weak self] in
             guard let self else { return }
             var lastKeepalive = Date()
+            var lastStatus = Date()
+            let start = Date()
+            self.lastDataReceived = start
+            self.keepalivesReceived = 0
+            self.keepalivesSent = 0
+
+            Log.info("Streaming started")
 
             while self.running {
                 self.recvAndDispatch(timeout: 0.05)
@@ -319,9 +330,44 @@ public final class P4PClient {
                     if let endpoint = self.relayEndpoint {
                         self.socket.send(alivePkt, to: endpoint)
                     }
+                    self.keepalivesSent += 1
                     lastKeepalive = now
                 }
+
+                if now.timeIntervalSince(lastStatus) > 5.0 {
+                    let elapsed = now.timeIntervalSince(start)
+                    let vf = self.rdtParser?.videoFrames ?? 0
+                    let af = self.rdtParser?.audioFrames ?? 0
+                    let sinceData = self.lastDataReceived.map {
+                        now.timeIntervalSince($0)
+                    } ?? elapsed
+                    let bufCount = self.kcpRecvBuf.count
+                    Log.info(String(
+                        format: "  %.0fs elapsed, %d bytes recv, "
+                        + "%d video frames, %d audio frames, "
+                        + "KCP sn=%d, buf=%d, "
+                        + "keepalive %d/%d, "
+                        + "last data %.1fs ago",
+                        elapsed, self.bytesReceived,
+                        vf, af,
+                        self.kcpNextSN, bufCount,
+                        self.keepalivesReceived, self.keepalivesSent,
+                        sinceData
+                    ))
+                    if sinceData > 10.0 {
+                        Log.warning(String(
+                            format: "No data received for %.0fs — stream may be stalled",
+                            sinceData
+                        ))
+                    }
+                    if bufCount > 50 {
+                        Log.warning("KCP reorder buffer has \(bufCount) pending packets — possible sequence gap at sn=\(self.kcpNextSN)")
+                    }
+                    lastStatus = now
+                }
             }
+
+            Log.info("Streaming stopped")
         }
     }
 
@@ -435,6 +481,7 @@ public final class P4PClient {
         case P4P.cmdRlyStreamRsp:
             handleStreamResponse(dec, from: addr)
         case P4P.cmdAlive:
+            keepalivesReceived += 1
             Log.debug("Keepalive from \(addr)")
         case P4P.cmdKCPData:
             handleKCPData(dec, from: addr)
@@ -539,6 +586,7 @@ public final class P4PClient {
     // MARK: - KCP handling
 
     private func handleKCPData(_ dec: Data, from addr: Endpoint) {
+        lastDataReceived = Date()
         let kcpData = Data(dec.dropFirst(16))
         var offset = 0
         var pendingAcks: [Data] = []
@@ -611,10 +659,39 @@ public final class P4PClient {
         kcpRecvBuf[sn] = data
         kcpUNA = max(kcpUNA, sn + 1)
 
+        let delivered = drainKCPBuffer()
+
+        // If nothing was delivered and the buffer is stuck, skip the gap.
+        if !delivered && !kcpRecvBuf.isEmpty {
+            let stallTime = Date().timeIntervalSince(kcpLastAdvance)
+            if stallTime > 2.0 {
+                skipKCPGap()
+            }
+        }
+    }
+
+    /// Deliver contiguous packets starting from kcpNextSN.
+    /// Returns true if at least one packet was delivered.
+    @discardableResult
+    private func drainKCPBuffer() -> Bool {
+        var any = false
         while let chunk = kcpRecvBuf.removeValue(forKey: kcpNextSN) {
             kcpNextSN += 1
             deliverData(chunk)
+            any = true
         }
+        if any { kcpLastAdvance = Date() }
+        return any
+    }
+
+    /// Skip missing KCP sequence numbers and resume delivery.
+    private func skipKCPGap() {
+        guard let minSN = kcpRecvBuf.keys.min() else { return }
+        let skipped = minSN - kcpNextSN
+        Log.warning("KCP stall: skipping \(skipped) missing packet(s) (sn \(kcpNextSN)..<\(minSN)), buf=\(kcpRecvBuf.count)")
+        kcpNextSN = minSN
+        rdtParser?.reset()
+        drainKCPBuffer()
     }
 
     private func deliverData(_ data: Data) {
