@@ -686,7 +686,12 @@ public final class P4PClient {
 
     /// Skip missing KCP sequence numbers and resume delivery.
     private func skipKCPGap() {
-        guard let minSN = kcpRecvBuf.keys.min() else { return }
+        // Purge any stale packets with SN below kcpNextSN.
+        kcpRecvBuf.keys.filter { $0 < kcpNextSN }.forEach {
+            kcpRecvBuf.removeValue(forKey: $0)
+        }
+        guard let minSN = kcpRecvBuf.keys.min(),
+              minSN > kcpNextSN else { return }
         let skipped = minSN - kcpNextSN
         Log.warning("KCP stall: skipping \(skipped) missing packet(s) (sn \(kcpNextSN)..<\(minSN)), buf=\(kcpRecvBuf.count)")
         kcpNextSN = minSN
