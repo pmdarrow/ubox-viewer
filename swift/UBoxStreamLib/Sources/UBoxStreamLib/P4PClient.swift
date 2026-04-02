@@ -48,7 +48,7 @@ public final class P4PClient {
     public let streamType: UInt8
 
     public private(set) var state: State = .idle
-    private let socket: UDPSocket
+    private var socket: UDPSocket
 
     private var relayServers: [Endpoint] = []
     private var relayEndpoint: Endpoint?
@@ -295,11 +295,55 @@ public final class P4PClient {
         socket.close()
     }
 
+    /// Reset connection state and re-establish the relay session.
+    /// Returns true if reconnection succeeded.
+    private func reconnect() -> Bool {
+        Log.info("Reconnecting...")
+        socket.close()
+
+        guard let newSocket = try? UDPSocket() else {
+            Log.error("Failed to create new socket for reconnect")
+            return false
+        }
+        socket = newSocket
+
+        state = .idle
+        relayServers = []
+        relayEndpoint = nil
+        sessionToken = 0
+        kcpConv = 0
+        kcpRecvBuf.removeAll()
+        kcpNextSN = 0
+        kcpUNA = 0
+        kcpLastAdvance = Date()
+        wakeupResponsesReceived = 0
+        seenIFrame = false
+        rdtParser?.reset()
+
+        guard connect(timeout: 30.0) else {
+            Log.error("Reconnection failed")
+            return false
+        }
+        startVideo()
+        lastDataReceived = Date()
+        keepalivesReceived = 0
+        keepalivesSent = 0
+        Log.info("Reconnected successfully")
+        return true
+    }
+
     /// Start streaming video on a background thread, delivering H.265 data via callback.
     public func startStreaming(onFrame: @escaping (Data, AVFrame) -> Void) {
         running = true
         seenIFrame = false
         videoCallback = onFrame
+
+        // Reset KCP state — the knock phase may have advanced kcpNextSN
+        // but video data starts from sn=0.
+        kcpRecvBuf.removeAll()
+        kcpNextSN = 0
+        kcpUNA = 0
+        kcpLastAdvance = Date()
 
         rdtParser = RDTParser(onVideo: { [weak self] data, frame in
             self?.onVideoFrame(data, frame)
@@ -334,13 +378,30 @@ public final class P4PClient {
                     lastKeepalive = now
                 }
 
+                let sinceData = self.lastDataReceived.map {
+                    now.timeIntervalSince($0)
+                } ?? now.timeIntervalSince(start)
+
+                // Auto-reconnect when relay goes silent.
+                if sinceData > 15.0 {
+                    Log.warning(String(
+                        format: "No data for %.0fs — attempting reconnect",
+                        sinceData
+                    ))
+                    if self.reconnect() {
+                        lastKeepalive = Date()
+                        lastStatus = Date()
+                    } else {
+                        Log.error("Reconnect failed, stopping stream")
+                        self.running = false
+                    }
+                    continue
+                }
+
                 if now.timeIntervalSince(lastStatus) > 5.0 {
                     let elapsed = now.timeIntervalSince(start)
                     let vf = self.rdtParser?.videoFrames ?? 0
                     let af = self.rdtParser?.audioFrames ?? 0
-                    let sinceData = self.lastDataReceived.map {
-                        now.timeIntervalSince($0)
-                    } ?? elapsed
                     let bufCount = self.kcpRecvBuf.count
                     Log.info(String(
                         format: "  %.0fs elapsed, %d bytes recv, "
@@ -354,12 +415,6 @@ public final class P4PClient {
                         self.keepalivesReceived, self.keepalivesSent,
                         sinceData
                     ))
-                    if sinceData > 10.0 {
-                        Log.warning(String(
-                            format: "No data received for %.0fs — stream may be stalled",
-                            sinceData
-                        ))
-                    }
                     if bufCount > 50 {
                         Log.warning("KCP reorder buffer has \(bufCount) pending packets — possible sequence gap at sn=\(self.kcpNextSN)")
                     }
@@ -487,6 +542,15 @@ public final class P4PClient {
             handleKCPData(dec, from: addr)
         case P4P.cmdKnock:
             Log.debug("Knock response from \(addr)")
+        case P4P.cmdKnockRelayR:
+            Log.debug("Knock relay response from \(addr)")
+        case P4P.cmdKnockPing:
+            Log.debug("Knock ping from \(addr), responding")
+            let knockPkt = P4P.buildKnock(
+                uid: uid, password: password, username: username,
+                sessionToken: sessionToken, kcpConv: kcpConv
+            )
+            socket.send(knockPkt, to: addr)
         default:
             Log.debug(String(
                 format: "Unknown cmd 0x%04x from %@ (%d bytes)",
@@ -657,9 +721,9 @@ public final class P4PClient {
         sn: UInt32, frg: UInt8, data: Data
     ) {
         kcpRecvBuf[sn] = data
-        kcpUNA = max(kcpUNA, sn + 1)
 
         let delivered = drainKCPBuffer()
+        kcpUNA = kcpNextSN
 
         // If nothing was delivered and the buffer is stuck, skip the gap.
         if !delivered && !kcpRecvBuf.isEmpty {

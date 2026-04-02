@@ -36,6 +36,8 @@ public enum P4P {
     static let cmdLanSearchRsp: UInt16 = 0x1304
     static let cmdKnock: UInt16        = 0x1403
     static let cmdKnockRelay: UInt16   = 0x130b
+    static let cmdKnockRelayR: UInt16  = 0x130c
+    static let cmdKnockPing: UInt16    = 0x130e
     static let cmdAlive: UInt16        = 0x1406
     static let cmdAVCtrl: UInt16       = 0x1407
     static let cmdKCPAck: UInt16       = 0x1409
