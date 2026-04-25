@@ -84,6 +84,7 @@
 				A6000001 /* Sources */,
 				A3000001 /* Frameworks */,
 				A6000002 /* Resources */,
+				A6000003 /* Install to /Applications */,
 			);
 			buildRules = (
 			);
@@ -152,6 +153,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A6000003 /* Install to /Applications */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Install to /Applications";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nDEST=\"/Applications/${PRODUCT_NAME}.app\"\nSRC=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}\"\nif [ ! -d \"${SRC}\" ]; then\n  echo \"warning: build product not found at ${SRC}, skipping install\"\n  exit 0\nfi\nrm -rf \"${DEST}\"\ncp -R \"${SRC}\" \"${DEST}\"\necho \"Installed ${DEST}\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
 		A7100001 /* Debug */ = {

@@ -28,9 +28,11 @@ swift build -c release
 
 ### Viewer app
 
-Open `UBoxViewer/UBoxViewer.xcodeproj` in Xcode and run the UBoxViewer scheme.
+Open `UBoxViewer/UBoxViewer.xcodeproj` in Xcode and run the UBoxViewer scheme. A post-build script also copies the built app to `/Applications/UBox Viewer.app` so it can be launched from the Dock.
 
 Credentials can be pre-filled via `UBOX_UID` and `UBOX_PASSWORD` environment variables (set in the scheme's Run configuration), or entered manually in the UI.
+
+If Connect hangs at "Phase 1: Querying master servers" and the log at `~/Library/Caches/UBoxStream/stream.log` shows no replies arriving, do a clean rebuild (Product → Clean Build Folder, then Run). The macOS Application Firewall, when stealth mode is on, can silently drop inbound UDP replies to an adhoc-signed app whose code-signature hash has been stale-cached. A fresh build re-signs the binary and clears the issue.
 
 ## Usage
 
