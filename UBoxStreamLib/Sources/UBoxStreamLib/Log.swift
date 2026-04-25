@@ -30,9 +30,13 @@ public enum Log {
             at: dir, withIntermediateDirectories: true
         )
         let path = dir.appendingPathComponent("stream.log").path
-        FileManager.default.createFile(atPath: path, contents: nil)
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: nil)
+        }
         let handle = FileHandle(forWritingAtPath: path)
         handle?.seekToEndOfFile()
+        let banner = "\n\n========== APP STARTED \(ISO8601DateFormatter().string(from: Date())) ==========\n\n"
+        handle?.write(Data(banner.utf8))
         return handle
     }()
 
@@ -45,7 +49,7 @@ public enum Log {
 
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return f
     }()
 

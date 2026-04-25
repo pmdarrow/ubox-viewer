@@ -103,6 +103,9 @@ final class RDTParser {
 
             if blockType == P4P.rdtVideo {
                 videoFrames += 1
+                if videoFrames <= 5 {
+                    Log.info("RDT video frame #\(videoFrames): \(mediaData.count) bytes, I=\(frame.isIFrame), codec=\(frame.codecName)")
+                }
                 onVideo?(mediaData, frame)
             } else {
                 audioFrames += 1

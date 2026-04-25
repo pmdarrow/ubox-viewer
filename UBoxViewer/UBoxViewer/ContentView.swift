@@ -2,6 +2,18 @@ import AVFoundation
 import SwiftUI
 import UBoxStreamLib
 
+/// Shared so the app delegate can trigger cleanup on termination.
+final class StreamManager {
+    static let shared = StreamManager()
+    var client: P4PClient?
+
+    func disconnect() {
+        client?.stopStreaming()
+        client?.close()
+        client = nil
+    }
+}
+
 struct ContentView: View {
     @State private var uid = Credentials.load()["UBOX_UID"] ?? ""
     @State private var password = Credentials.load()["UBOX_PASSWORD"] ?? ""
@@ -10,7 +22,6 @@ struct ContentView: View {
     @State private var isConnected = false
     @State private var isConnecting = false
 
-    @State private var client: P4PClient?
     @State private var decoder = H265Decoder()
     @State private var displayLayer = AVSampleBufferDisplayLayer()
 
@@ -59,6 +70,9 @@ struct ContentView: View {
                 connect()
             }
         }
+        .onDisappear {
+            disconnect()
+        }
     }
 
     private var streamStats: some View {
@@ -97,7 +111,14 @@ struct ContentView: View {
         var nextPTS = CMTime.zero
         var frameDuration = CMTime(value: 1, timescale: 15)
 
+        var decodedFrameCount = 0
         decoder.onDecodedFrame = { pixelBuffer in
+            decodedFrameCount += 1
+            if decodedFrameCount <= 5 {
+                let w = CVPixelBufferGetWidth(pixelBuffer)
+                let h = CVPixelBufferGetHeight(pixelBuffer)
+                Log.info("Decoded frame #\(decodedFrameCount): \(w)x\(h)")
+            }
             if let timebase {
                 let now = CMTimebaseGetTime(timebase)
                 if nextPTS < now { nextPTS = now }
@@ -114,7 +135,10 @@ struct ContentView: View {
                           presentationTimeStamp: pts,
                           decodeTimeStamp: .invalid
                       )
-                  ) else { return }
+                  ) else {
+                Log.warning("Failed to create sample buffer for frame #\(decodedFrameCount)")
+                return
+            }
             displayLayer.enqueue(sampleBuffer)
         }
 
@@ -135,7 +159,13 @@ struct ContentView: View {
                 }
 
                 c.startVideo()
+                Log.info("startVideo() called, starting stream...")
+                var viewerFrameCount = 0
                 c.startStreaming { data, frame in
+                    viewerFrameCount += 1
+                    if viewerFrameCount <= 5 {
+                        Log.info("Viewer callback frame #\(viewerFrameCount): \(data.count) bytes, I=\(frame.isIFrame), fps=\(frame.framerate)")
+                    }
                     if frame.framerate > 0 {
                         frameDuration = CMTime(value: 1, timescale: Int32(frame.framerate))
                     }
@@ -146,7 +176,7 @@ struct ContentView: View {
                 }
 
                 DispatchQueue.main.async {
-                    client = c
+                    StreamManager.shared.client = c
                     isConnected = true
                     isConnecting = false
                     streamStart = Date()
@@ -163,9 +193,7 @@ struct ContentView: View {
     }
 
     private func disconnect() {
-        client?.stopStreaming()
-        client?.close()
-        client = nil
+        StreamManager.shared.disconnect()
         isConnected = false
         streamStart = nil
         bytesReceived = 0
@@ -200,18 +228,14 @@ struct ContentView: View {
 
 private enum Credentials {
     static func load() -> [String: String] {
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        var dir = url
-        for _ in 0..<5 {
+        // Walk up from the source file, checking each directory for .credentials
+        var dir = URL(fileURLWithPath: #filePath)
+        for _ in 0..<10 {
+            dir = dir.deletingLastPathComponent()
             let file = dir.appendingPathComponent(".credentials")
             if let contents = try? String(contentsOf: file, encoding: .utf8) {
                 return parse(contents)
             }
-            dir = dir.deletingLastPathComponent()
         }
         return [:]
     }

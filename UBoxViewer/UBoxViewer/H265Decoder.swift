@@ -6,6 +6,7 @@
 import CoreMedia
 import Foundation
 import OSLog
+import UBoxStreamLib
 import VideoToolbox
 
 final class H265Decoder {
@@ -20,16 +21,29 @@ final class H265Decoder {
 
     var onDecodedFrame: ((CVPixelBuffer) -> Void)?
 
+    private var naluCount = 0
+
     func decode(_ data: Data) {
-        for nalu in data.nalus() {
+        let nalus = data.nalus()
+        for nalu in nalus {
             guard let firstByte = nalu.first else { continue }
             let nalType = (firstByte & 0x7E) >> 1
+            naluCount += 1
+
+            if naluCount <= 20 {
+                Log.info("NALU #\(naluCount): type=\(nalType), \(nalu.count) bytes, hasSession=\(session != nil)")
+            }
 
             switch nalType {
-            case 32: vps = nalu
-            case 33: sps = nalu
+            case 32:
+                vps = nalu
+                Log.info("VPS received (\(nalu.count) bytes)")
+            case 33:
+                sps = nalu
+                Log.info("SPS received (\(nalu.count) bytes)")
             case 34:
                 pps = nalu
+                Log.info("PPS received (\(nalu.count) bytes)")
                 rebuildFormatDescription()
             case 0...9, 16...21:
                 decodeVCL(nalu)
@@ -53,13 +67,17 @@ final class H265Decoder {
     // MARK: - Private
 
     private func rebuildFormatDescription() {
-        guard let vps, let sps, let pps else { return }
+        guard let vps, let sps, let pps else {
+            Log.warning("rebuildFormatDescription: missing params (vps=\(vps != nil) sps=\(sps != nil) pps=\(pps != nil))")
+            return
+        }
         do {
             let desc = try CMVideoFormatDescription(hevcParameterSets: [vps, sps, pps])
             formatDescription = desc
+            Log.info("Format description created: \(desc)")
             createSession()
         } catch {
-            Self.logger.error("Format description failed: \(error, privacy: .public)")
+            Log.error("Format description failed: \(error)")
         }
     }
 

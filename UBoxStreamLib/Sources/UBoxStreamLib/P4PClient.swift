@@ -60,6 +60,7 @@ public final class P4PClient {
     private var kcpUNA: UInt32 = 0
     private var kcpLastAdvance: Date = Date()
     private var running = false
+    private var streamingStopped: DispatchSemaphore?
 
     private var videoFile: FileHandle?
     private var rawDumpFile: FileHandle?
@@ -190,7 +191,7 @@ public final class P4PClient {
         }
 
         state = .connected
-        Log.info("Connected! Relay endpoint: \(endpoint)")
+        Log.info("Connected! Relay endpoint: \(endpoint), KCP state after knock: nextSN=\(kcpNextSN), una=\(kcpUNA), conv=0x\(String(kcpConv, radix: 16)), buf=\(kcpRecvBuf.count), pkts=\(packetsReceived), bytes=\(bytesReceived)")
         return true
     }
 
@@ -214,6 +215,16 @@ public final class P4PClient {
             }
         }()
         Log.info("Sent start video command (channel \(channel), \(quality))")
+    }
+
+    /// Send AV control command to stop video streaming.
+    public func stopVideo(channel: UInt8 = 0) {
+        guard let endpoint = relayEndpoint else { return }
+        let pkt = P4P.buildAVStopVideo(
+            channel: channel, streamType: streamType
+        )
+        socket.send(pkt, to: endpoint)
+        Log.info("Sent stop video command")
     }
 
     /// Main receive loop — collects video data and writes clean H.265.
@@ -288,6 +299,24 @@ public final class P4PClient {
 
     public func close() {
         running = false
+
+        // Wait for the streaming loop to exit so it stops using the socket.
+        if let semaphore = streamingStopped {
+            _ = semaphore.wait(timeout: .now() + 2.0)
+            streamingStopped = nil
+        }
+
+        // Tell the relay to stop sending video and close the session.
+        stopVideo()
+        if let endpoint = relayEndpoint {
+            let logout = P4P.buildRelayLogout()
+            socket.send(logout, to: endpoint)
+            // Send logout multiple times to improve delivery reliability (UDP).
+            socket.send(logout, to: endpoint)
+            socket.send(logout, to: endpoint)
+            Log.info("Sent relay logout request")
+        }
+
         videoFile?.closeFile()
         videoFile = nil
         rawDumpFile?.closeFile()
@@ -338,21 +367,34 @@ public final class P4PClient {
         seenIFrame = false
         videoCallback = onFrame
 
-        // Reset KCP state — the knock phase may have advanced kcpNextSN
-        // but video data starts from sn=0.
+        // Reset KCP state — we ignored KCP data during the knock phase, so
+        // the relay's KCP starts fresh from sn=0 for actual video data.
+        Log.info("startStreaming: resetting KCP state (nextSN=\(kcpNextSN), una=\(kcpUNA), buf=\(kcpRecvBuf.count))")
         kcpRecvBuf.removeAll()
         kcpNextSN = 0
         kcpUNA = 0
         kcpLastAdvance = Date()
+        kcpPushCount = 0
+        kcpRetransmitCount = 0
+        kcpNonPushCount = 0
+        kcpConvMismatchCount = 0
+        nonP4PCount = 0
+        unknownCmdCount = 0
+        acksSent = 0
+        knockPingCount = 0
 
         rdtParser = RDTParser(onVideo: { [weak self] data, frame in
             self?.onVideoFrame(data, frame)
         })
 
+        let semaphore = DispatchSemaphore(value: 0)
+        streamingStopped = semaphore
+
         let queue = DispatchQueue(label: "com.ubox.stream", qos: .userInitiated)
         streamingQueue = queue
 
         queue.async { [weak self] in
+            defer { semaphore.signal() }
             guard let self else { return }
             var lastKeepalive = Date()
             var lastStatus = Date()
@@ -398,22 +440,41 @@ public final class P4PClient {
                     continue
                 }
 
-                if now.timeIntervalSince(lastStatus) > 5.0 {
-                    let elapsed = now.timeIntervalSince(start)
+                // Periodic stall check — runs even when no PUSH data arrives
+                if !self.kcpRecvBuf.isEmpty {
+                    let stallTime = now.timeIntervalSince(self.kcpLastAdvance)
+                    if stallTime > 2.0 {
+                        Log.info("KCP loop stall check: stallTime=\(String(format: "%.1f", stallTime))s, buf=\(self.kcpRecvBuf.count), nextSN=\(self.kcpNextSN)")
+                        self.skipKCPGap()
+                    }
+                }
+
+                let elapsed = now.timeIntervalSince(start)
+                let statusInterval: TimeInterval = elapsed < 15 ? 1.0 : 5.0
+                if now.timeIntervalSince(lastStatus) > statusInterval {
                     let vf = self.rdtParser?.videoFrames ?? 0
                     let af = self.rdtParser?.audioFrames ?? 0
                     let bufCount = self.kcpRecvBuf.count
                     Log.info(String(
-                        format: "  %.0fs elapsed, %d bytes recv, "
+                        format: "  %.0fs elapsed, %d bytes recv, %d pkts, "
                         + "%d video frames, %d audio frames, "
-                        + "KCP sn=%d, buf=%d, "
-                        + "keepalive %d/%d, "
-                        + "last data %.1fs ago",
-                        elapsed, self.bytesReceived,
+                        + "KCP sn=%d, buf=%d, push=%d, retransmit=%d, "
+                        + "keepalive %d/%d, acks=%d, "
+                        + "last data %.1fs ago, "
+                        + "I-frame=%@, "
+                        + "nonPush=%d, convMismatch=%d, "
+                        + "nonP4P=%d, unknownCmd=%d, knockPing=%d",
+                        elapsed, self.bytesReceived, self.packetsReceived,
                         vf, af,
                         self.kcpNextSN, bufCount,
+                        self.kcpPushCount, self.kcpRetransmitCount,
                         self.keepalivesReceived, self.keepalivesSent,
-                        sinceData
+                        self.acksSent,
+                        sinceData,
+                        self.seenIFrame ? "yes" : "no",
+                        self.kcpNonPushCount, self.kcpConvMismatchCount,
+                        self.nonP4PCount, self.unknownCmdCount,
+                        self.knockPingCount
                     ))
                     if bufCount > 50 {
                         Log.warning("KCP reorder buffer has \(bufCount) pending packets — possible sequence gap at sn=\(self.kcpNextSN)")
@@ -426,9 +487,13 @@ public final class P4PClient {
         }
     }
 
-    /// Stop the background streaming loop.
+    /// Stop the background streaming loop and wait for it to finish.
     public func stopStreaming() {
         running = false
+        if let semaphore = streamingStopped {
+            _ = semaphore.wait(timeout: .now() + 2.0)
+            streamingStopped = nil
+        }
         videoCallback = nil
         rdtParser = nil
     }
@@ -482,13 +547,18 @@ public final class P4PClient {
             Log.info("Camera reports framerate: \(frame.framerate) fps")
         }
         if !seenIFrame {
-            guard frame.isIFrame else { return }
-            seenIFrame = true
-            captureStart = Date()
-            Log.info("First I-frame received, starting capture")
+            if frame.isIFrame {
+                seenIFrame = true
+                captureStart = Date()
+                Log.info("First I-frame received (\(data.count) bytes), starting capture")
+            } else {
+                Log.debug("Skipping non-I-frame (\(data.count) bytes) before first I-frame")
+                return
+            }
         }
         videoFile?.write(data)
         bytesWritten += data.count
+        Log.debug("Video frame delivered: \(frame.isIFrame ? "I" : "P")-frame, \(data.count) bytes")
         videoCallback?(data, frame)
     }
 
@@ -506,11 +576,14 @@ public final class P4PClient {
         return state >= target
     }
 
+    private var packetsReceived: Int = 0
+
     private func recvAndDispatch(timeout: TimeInterval = 0.5) {
         guard socket.waitForData(timeout: timeout) else { return }
         while let (data, endpoint) = socket.receive() {
             guard data.count >= 4 else { continue }
             bytesReceived += data.count
+            packetsReceived += 1
             handlePacket(data, from: endpoint)
         }
     }
@@ -519,10 +592,13 @@ public final class P4PClient {
         let dec = P4P.decryptPacket(data)
         let magic = P4P.packetMagic(dec)
         guard magic == P4P.magic else {
-            Log.debug(String(
-                format: "Non-P4P packet from %@ (magic=0x%04x, %d bytes)",
-                addr.description, magic, dec.count
-            ))
+            nonP4PCount += 1
+            if nonP4PCount <= 5 {
+                Log.info(String(
+                    format: "Non-P4P packet from %@ (magic=0x%04x, %d bytes)",
+                    addr.description, magic, dec.count
+                ))
+            }
             return
         }
 
@@ -539,12 +615,20 @@ public final class P4PClient {
             keepalivesReceived += 1
             Log.debug("Keepalive from \(addr)")
         case P4P.cmdKCPData:
-            handleKCPData(dec, from: addr)
+            // Only process KCP data once streaming is active. Data arriving
+            // during the knock phase is residual relay traffic that corrupts
+            // the KCP window state if acknowledged.
+            if running {
+                handleKCPData(dec, from: addr)
+            } else {
+                lastDataReceived = Date()
+            }
         case P4P.cmdKnock:
             Log.debug("Knock response from \(addr)")
         case P4P.cmdKnockRelayR:
             Log.debug("Knock relay response from \(addr)")
         case P4P.cmdKnockPing:
+            knockPingCount += 1
             Log.debug("Knock ping from \(addr), responding")
             let knockPkt = P4P.buildKnock(
                 uid: uid, password: password, username: username,
@@ -552,10 +636,13 @@ public final class P4PClient {
             )
             socket.send(knockPkt, to: addr)
         default:
-            Log.debug(String(
-                format: "Unknown cmd 0x%04x from %@ (%d bytes)",
-                cmd, addr.description, dec.count
-            ))
+            unknownCmdCount += 1
+            if unknownCmdCount <= 10 {
+                Log.info(String(
+                    format: "Unknown cmd 0x%04x from %@ (%d bytes)",
+                    cmd, addr.description, dec.count
+                ))
+            }
         }
     }
 
@@ -649,6 +736,15 @@ public final class P4PClient {
 
     // MARK: - KCP handling
 
+    private var kcpNonPushCount = 0
+    private var kcpConvMismatchCount = 0
+    private var kcpRetransmitCount = 0
+    private var kcpPushCount = 0
+    private var nonP4PCount = 0
+    private var unknownCmdCount = 0
+    private var acksSent = 0
+    private var knockPingCount = 0
+
     private func handleKCPData(_ dec: Data, from addr: Endpoint) {
         lastDataReceived = Date()
         let kcpData = Data(dec.dropFirst(16))
@@ -665,6 +761,20 @@ public final class P4PClient {
                 Log.info(String(
                     format: "KCP conversation ID: 0x%08x", kcpConv
                 ))
+            }
+
+            if seg.conv != kcpConv {
+                kcpConvMismatchCount += 1
+                if kcpConvMismatchCount <= 5 {
+                    Log.warning(String(
+                        format: "KCP conv mismatch: got 0x%08x expected 0x%08x, sn=%d cmd=%d",
+                        seg.conv, kcpConv, seg.sn, seg.cmd
+                    ))
+                }
+                offset += (seg.cmd == P4P.kcpCmdPush)
+                    ? seg.dataOffset + Int(seg.len)
+                    : P4P.kcpHeaderSize
+                continue
             }
 
             if seg.cmd == P4P.kcpCmdPush {
@@ -690,6 +800,13 @@ public final class P4PClient {
                 )
                 offset = dataEnd
             } else {
+                kcpNonPushCount += 1
+                if kcpNonPushCount <= 10 {
+                    Log.info(String(
+                        format: "KCP non-PUSH cmd=%d sn=%d una=%d wnd=%d",
+                        seg.cmd, seg.sn, seg.una, seg.wnd
+                    ))
+                }
                 offset += P4P.kcpHeaderSize
             }
         }
@@ -715,11 +832,27 @@ public final class P4PClient {
 
         let encrypted = Crypto.encode(pkt)
         socket.send(encrypted, to: endpoint)
+        acksSent += acks.count
+        if acksSent <= 10 {
+            Log.info("ACK sent: \(acks.count) ack(s), una=\(kcpUNA), nextSN=\(kcpNextSN), pktSize=\(encrypted.count) to \(endpoint)")
+        }
     }
+
+    private var lastProcessLog = Date.distantPast
 
     private func processKCPPayload(
         sn: UInt32, frg: UInt8, data: Data
     ) {
+        kcpPushCount += 1
+        // Drop packets we've already delivered — don't let them accumulate.
+        if sn < kcpNextSN {
+            kcpRetransmitCount += 1
+            if kcpRetransmitCount <= 5 {
+                Log.info("KCP retransmit dropped: sn=\(sn) < nextSN=\(kcpNextSN), una=\(kcpUNA)")
+            }
+            return
+        }
+
         kcpRecvBuf[sn] = data
 
         let delivered = drainKCPBuffer()
@@ -727,8 +860,10 @@ public final class P4PClient {
 
         // If nothing was delivered and the buffer is stuck, skip the gap.
         if !delivered && !kcpRecvBuf.isEmpty {
-            let stallTime = Date().timeIntervalSince(kcpLastAdvance)
+            let now = Date()
+            let stallTime = now.timeIntervalSince(kcpLastAdvance)
             if stallTime > 2.0 {
+                Log.info("KCP stall recovery: stallTime=\(String(format: "%.1f", stallTime))s, buf=\(kcpRecvBuf.count), nextSN=\(kcpNextSN)")
                 skipKCPGap()
             }
         }
@@ -750,17 +885,26 @@ public final class P4PClient {
 
     /// Skip missing KCP sequence numbers and resume delivery.
     private func skipKCPGap() {
+        let beforeCount = kcpRecvBuf.count
         // Purge any stale packets with SN below kcpNextSN.
-        kcpRecvBuf.keys.filter { $0 < kcpNextSN }.forEach {
-            kcpRecvBuf.removeValue(forKey: $0)
+        let staleKeys = kcpRecvBuf.keys.filter { $0 < kcpNextSN }
+        for key in staleKeys {
+            kcpRecvBuf.removeValue(forKey: key)
+        }
+        if !staleKeys.isEmpty {
+            Log.info("KCP skipGap: purged \(staleKeys.count) stale packets (below sn=\(kcpNextSN)), buf \(beforeCount) -> \(kcpRecvBuf.count)")
         }
         guard let minSN = kcpRecvBuf.keys.min(),
-              minSN > kcpNextSN else { return }
+              minSN > kcpNextSN else {
+            Log.warning("KCP skipGap: no packets ahead of sn=\(kcpNextSN), buf=\(kcpRecvBuf.count) — cannot skip")
+            return
+        }
         let skipped = minSN - kcpNextSN
         Log.warning("KCP stall: skipping \(skipped) missing packet(s) (sn \(kcpNextSN)..<\(minSN)), buf=\(kcpRecvBuf.count)")
         kcpNextSN = minSN
         rdtParser?.reset()
-        drainKCPBuffer()
+        let drained = drainKCPBuffer()
+        Log.info("KCP skipGap: after drain nextSN=\(kcpNextSN), buf=\(kcpRecvBuf.count), drained=\(drained)")
     }
 
     private func deliverData(_ data: Data) {

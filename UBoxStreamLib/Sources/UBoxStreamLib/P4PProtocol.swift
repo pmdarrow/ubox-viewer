@@ -43,6 +43,8 @@ public enum P4P {
     static let cmdKCPAck: UInt16       = 0x1409
     static let cmdKCPData: UInt16      = 0x140a
 
+    static let cmdRlyLogoutReq: UInt16 = 0x1207
+    static let avCmdStopVideo: UInt8  = 0x02
     static let avCmdStartVideo: UInt8 = 0x09
 
     static let subQuery: UInt16 = 0x28
@@ -236,6 +238,24 @@ extension P4P {
         pkt[17] = channel
         pkt[18] = streamType
         pkt[19] = 0x01
+        return Crypto.encode(pkt)
+    }
+
+    /// Build an AV control packet to stop video streaming.
+    static func buildAVStopVideo(
+        channel: UInt8 = 0, streamType: UInt8 = streamMain
+    ) -> Data {
+        var pkt = makePacket(size: 48, cmd: cmdAVCtrl, sub: 0)
+        pkt[16] = avCmdStopVideo
+        pkt[17] = channel
+        pkt[18] = streamType
+        pkt[19] = 0x01
+        return Crypto.encode(pkt)
+    }
+
+    /// Build a relay logout request to cleanly close the session.
+    static func buildRelayLogout() -> Data {
+        let pkt = makePacket(size: 48, cmd: cmdRlyLogoutReq, sub: subRelay)
         return Crypto.encode(pkt)
     }
 }
