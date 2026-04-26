@@ -38,7 +38,12 @@ public enum P4P {
     static let cmdKnockRelay: UInt16   = 0x130b
     static let cmdKnockRelayR: UInt16  = 0x130c
     static let cmdKnockPing: UInt16    = 0x130e
-    static let cmdAlive: UInt16        = 0x1406
+    // Outbound (client→camera). Camera's receiver dispatches 0x1405 to
+    // p4p_device_handle_alive; 0x1406 is the camera's reply cmd. The relay
+    // routes by cmd, so 0x1406 outbound never reaches the camera's alive
+    // handler and the session never registers as alive.
+    static let cmdAlive: UInt16        = 0x1405
+    static let cmdAliveRsp: UInt16     = 0x1406
     static let cmdAVCtrl: UInt16       = 0x1407
     static let cmdKCPAck: UInt16       = 0x1409
     static let cmdKCPData: UInt16      = 0x140a
@@ -216,10 +221,14 @@ extension P4P {
     static func buildAlive(
         sessionToken: UInt32 = 0, conv: UInt32 = 0
     ) -> Data {
-        var pkt = makePacket(size: 36, cmd: cmdAlive, sub: subAlive)
-        if conv != 0 {
-            pkt.writeUInt32LE(conv, at: 24)
-        }
+        var pkt = makePacket(size: 36, cmd: cmdAlive, sub: subRelay)
+        pkt.writeUInt16LE(UInt16(sessionToken >> 16), at: 12)
+        // Body layout (matches mobile app capture):
+        //   [16..20] zero
+        //   [20..24] sessionToken (LE)
+        //   [24..28] kcpConv (LE)
+        pkt.writeUInt32LE(sessionToken, at: 20)
+        pkt.writeUInt32LE(conv, at: 24)
         return Crypto.encode(pkt)
     }
 

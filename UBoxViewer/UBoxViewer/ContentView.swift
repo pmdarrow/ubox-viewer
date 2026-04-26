@@ -158,8 +158,7 @@ struct ContentView: View {
                     return
                 }
 
-                c.startVideo()
-                Log.info("startVideo() called, starting stream...")
+                Log.info("starting stream...")
                 var viewerFrameCount = 0
                 c.startStreaming { data, frame in
                     viewerFrameCount += 1
