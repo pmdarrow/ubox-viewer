@@ -51,6 +51,7 @@ public enum P4P {
     static let cmdKCPData: UInt16      = 0x140a
 
     static let cmdRlyLogoutReq: UInt16 = 0x1207
+    static let cmdCliLogoutReq: UInt16 = 0x1309
     static let avCmdStopVideo: UInt8  = 0x02
     static let avCmdStartVideo: UInt8 = 0x09
 
@@ -110,6 +111,8 @@ extension P4P {
     struct StreamResponse {
         let relayIP: String
         let relayPort: UInt16
+        let sessionIndex: UInt8
+        let sessionByte: UInt8
         let sessionToken: UInt32
         let kcpConv: UInt32
         let raw: Data
@@ -220,32 +223,31 @@ extension P4P {
     }
 
     /// Build a knock-ack (52 bytes). Sent in response to cmdKnockRelayR
-    /// to confirm the relay tunnel — transitions session into mode 7,
-    /// after which all KCP traffic uses sub=0x21 and h12=0.
-    /// Body layout: 28 bytes zero + sessionToken + kcpConv = 36 bytes.
+    /// to confirm the relay tunnel — transitions session into mode 7.
+    /// Body layout: 27 bytes zero + remote session id + sessionToken + kcpConv.
     static func buildKnockAck(
-        sessionToken: UInt32, kcpConv: UInt32
+        sessionToken: UInt32, kcpConv: UInt32, sessionByte: UInt8 = 0
     ) -> Data {
         var pkt = makePacket(size: 52, cmd: cmdKnockAck, sub: subKnock)
+        pkt[0x2b] = sessionByte
         pkt.writeUInt32LE(sessionToken, at: 0x2c)
         pkt.writeUInt32LE(kcpConv, at: 0x30)
         return Crypto.encode(pkt)
     }
 
     /// Build a keepalive packet.
-    /// - mode 6 (pre-knock-ack): outer sub=0x24, h12=high u16 of sessionToken.
-    /// - mode 7 (post-knock-ack): outer sub=0x21, h12=0.
+    /// - header: h6=local session index, h12=high u16 of sessionToken.
+    /// - body: byte 17=local session index, byte 18=remote session id.
     static func buildAlive(
-        sessionToken: UInt32 = 0, conv: UInt32 = 0, mode: Int = 6
+        sessionToken: UInt32 = 0, conv: UInt32 = 0, mode: Int = 6,
+        sessionIndex: UInt8 = 0, sessionByte: UInt8 = 0
     ) -> Data {
         let sub: UInt16 = (mode == 7) ? subKnock : subRelay
-        let h12: UInt16 = (mode == 7) ? 0 : UInt16(sessionToken >> 16)
         var pkt = makePacket(size: 36, cmd: cmdAlive, sub: sub)
-        pkt.writeUInt16LE(h12, at: 12)
-        // Body layout (matches mobile app capture):
-        //   [16..20] zero
-        //   [20..24] sessionToken (LE)
-        //   [24..28] kcpConv (LE)
+        pkt.writeUInt16LE(UInt16(sessionIndex), at: 6)
+        pkt.writeUInt16LE(UInt16(sessionToken >> 16), at: 12)
+        pkt[17] = sessionIndex
+        pkt[18] = sessionByte
         pkt.writeUInt32LE(sessionToken, at: 20)
         pkt.writeUInt32LE(conv, at: 24)
         return Crypto.encode(pkt)
@@ -259,9 +261,18 @@ extension P4P {
     ///   - byte 2: stream_type (0=SD, 1=HD, 2=LF_SD, 3=LF_HD)
     ///   - byte 3: codec (1 = H.265)
     static func buildAVStartVideo(
-        channel: UInt8 = 0, streamType: UInt8 = streamMain
+        channel: UInt8 = 0, streamType: UInt8 = streamMain,
+        mode: Int = 7, sessionIndex: UInt8 = 0,
+        sessionByte: UInt8 = 0, sessionToken: UInt32 = 0
     ) -> Data {
-        var pkt = makePacket(size: 48, cmd: cmdAVCtrl, sub: 0)
+        let sub: UInt16 = (mode == 7) ? subKnock : subRelay
+        let h12: UInt16 = (mode == 7)
+            ? UInt16(sessionByte)
+            : UInt16(sessionToken >> 16)
+        var pkt = makePacket(size: 48, cmd: cmdAVCtrl, sub: sub)
+        pkt.writeUInt16LE(UInt16(sessionIndex), at: 6)
+        pkt.writeUInt16LE(h12, at: 12)
+        pkt[14] = channel
         pkt[16] = avCmdStartVideo
         pkt[17] = channel
         pkt[18] = streamType
@@ -271,9 +282,18 @@ extension P4P {
 
     /// Build an AV control packet to stop video streaming.
     static func buildAVStopVideo(
-        channel: UInt8 = 0, streamType: UInt8 = streamMain
+        channel: UInt8 = 0, streamType: UInt8 = streamMain,
+        mode: Int = 7, sessionIndex: UInt8 = 0,
+        sessionByte: UInt8 = 0, sessionToken: UInt32 = 0
     ) -> Data {
-        var pkt = makePacket(size: 48, cmd: cmdAVCtrl, sub: 0)
+        let sub: UInt16 = (mode == 7) ? subKnock : subRelay
+        let h12: UInt16 = (mode == 7)
+            ? UInt16(sessionByte)
+            : UInt16(sessionToken >> 16)
+        var pkt = makePacket(size: 48, cmd: cmdAVCtrl, sub: sub)
+        pkt.writeUInt16LE(UInt16(sessionIndex), at: 6)
+        pkt.writeUInt16LE(h12, at: 12)
+        pkt[14] = channel
         pkt[16] = avCmdStopVideo
         pkt[17] = channel
         pkt[18] = streamType
@@ -281,21 +301,33 @@ extension P4P {
         return Crypto.encode(pkt)
     }
 
-    /// Build a relay logout request (84 bytes, same structure as knock so the
-    /// relay can identify which session to terminate).
-    /// An empty-bodied logout is silently ignored by the relay since it can't
-    /// match it to any session — and the orphaned session keeps wedging new
-    /// connections from the same UID.
+    /// Build a relay logout request.
+    ///
+    /// This mirrors the native client's 100-byte `p4p_client_send_logoutreq`
+    /// packet. The older knock-shaped 84-byte variant gets a relay response,
+    /// but does not reliably free the camera-side relay session.
     static func buildRelayLogout(
         uid: String, password: String, username: String = "admin",
-        sessionToken: UInt32 = 0, kcpConv: UInt32 = 0
+        sessionToken: UInt32 = 0, kcpConv: UInt32 = 0,
+        mode: Int = 6, sessionByte: UInt8 = 0
     ) -> Data {
-        var pkt = makePacket(size: 84, cmd: cmdRlyLogoutReq, sub: subRelay)
-        pkt.writeASCII(uid, at: 0x10, maxLength: 20)
-        pkt.writeASCII(password, at: 0x24, maxLength: 16)
-        pkt.writeUInt32LE(sessionToken, at: 0x3c)
-        pkt.writeUInt32LE(kcpConv, at: 0x40)
-        pkt.writeASCII(username, at: 0x44, maxLength: 16)
+        _ = (uid, password, username)
+
+        let confirmed = mode == 7
+        var pkt = makePacket(
+            size: 100,
+            cmd: confirmed ? cmdCliLogoutReq : cmdRlyLogoutReq,
+            sub: confirmed ? subKnock : subRelay
+        )
+        if confirmed {
+            pkt[0x4b] = sessionByte
+        } else {
+            pkt.writeUInt16LE(UInt16(sessionByte), at: 6)
+            pkt.writeUInt16LE(UInt16(sessionToken >> 16), at: 12)
+            pkt[0x4b] = sessionByte
+        }
+        pkt[16] = 0x01
+        pkt.writeUInt32LE(kcpConv, at: 0x50)
         return Crypto.encode(pkt)
     }
 }
@@ -348,6 +380,8 @@ extension P4P {
     ///   - `[0x14]` client source port (2 bytes BE)
     ///   - `[0x16]` relay port (2 bytes BE)
     ///   - `[0x18]` relay IP (4 bytes, network order)
+    ///   - `[0x46]` session index used in relay-session headers
+    ///   - `[0x47]` session byte used in relay-session headers
     ///   - `[0x48]` session token (4 bytes LE)
     ///   - `[0x4c]` KCP conv (4 bytes LE)
     static func parseRelayStreamResponse(_ dec: Data) -> StreamResponse? {
@@ -358,6 +392,12 @@ extension P4P {
         let relayPort = dec.uint16BE(at: 0x16)
         let relayIP = dec.ipString(at: 0x18)
 
+        let sessionIndex = dec.count > 0x46
+            ? dec[dec.startIndex + 0x46]
+            : 0
+        let sessionByte = dec.count > 0x47
+            ? dec[dec.startIndex + 0x47]
+            : 0
         var sessionToken: UInt32 = 0
         var kcpConv: UInt32 = 0
         if dec.count > 0x4f {
@@ -367,6 +407,7 @@ extension P4P {
 
         return StreamResponse(
             relayIP: relayIP, relayPort: relayPort,
+            sessionIndex: sessionIndex, sessionByte: sessionByte,
             sessionToken: sessionToken, kcpConv: kcpConv,
             raw: dec
         )
