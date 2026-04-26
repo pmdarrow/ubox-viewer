@@ -17,7 +17,6 @@ final class StreamManager {
 struct ContentView: View {
     @State private var uid = Credentials.load()["UBOX_UID"] ?? ""
     @State private var password = Credentials.load()["UBOX_PASSWORD"] ?? ""
-    @State private var quality: UInt8 = P4P.streamMain
     @State private var status = "Disconnected"
     @State private var isConnected = false
     @State private var isConnecting = false
@@ -27,21 +26,29 @@ struct ContentView: View {
 
     @State private var streamStart: Date?
     @State private var bytesReceived: Int = 0
+    @State private var streamMetadata = StreamMetadata()
 
     var body: some View {
         VStack(spacing: 0) {
-            VideoView(displayLayer: displayLayer)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(.black)
+            ZStack {
+                VideoView(displayLayer: displayLayer)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.black)
+
+                if isConnecting {
+                    Color.black.opacity(0.25)
+                    VStack(spacing: 10) {
+                        ProgressView()
+                            .controlSize(.large)
+                        Text(status)
+                            .font(.callout)
+                    }
+                    .padding(16)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
 
             HStack(spacing: 12) {
-                Picker("", selection: $quality) {
-                    Text("HD").tag(P4P.streamMain)
-                    Text("SD").tag(P4P.streamSub)
-                }
-                .pickerStyle(.segmented)
-                .fixedSize()
-
                 Button(isConnected ? "Disconnect" : "Connect") {
                     if isConnected {
                         disconnect()
@@ -81,6 +88,22 @@ struct ContentView: View {
             let bytes = bytesReceived
 
             HStack(spacing: 12) {
+                HStack(spacing: 3) {
+                    if let signalTechnologyText = streamMetadata.signalTechnologyText {
+                        Text(signalTechnologyText)
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                    }
+                    Image(systemName: "cellularbars", variableValue: streamMetadata.signalLevel)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(streamMetadata.signalAccessibilityText)
+                .help(streamMetadata.signalAccessibilityText)
+                .opacity(streamMetadata.signalOpacity)
+                Label(streamMetadata.batteryText, systemImage: streamMetadata.batterySystemImage)
+                    .help("Battery")
+                Label(streamMetadata.viewersText, systemImage: "person.2")
+                    .help("Active viewers")
                 Label(formatDuration(elapsed), systemImage: "record.circle")
                 Label(formatBytes(bytes), systemImage: "arrow.down.circle")
             }
@@ -94,7 +117,6 @@ struct ContentView: View {
         status = "Connecting..."
         let currentUID = uid
         let currentPassword = password
-        let currentQuality = quality
 
         var timebase: CMTimebase?
         CMTimebaseCreateWithSourceClock(
@@ -147,7 +169,7 @@ struct ContentView: View {
                 let c = try P4PClient(
                     uid: currentUID,
                     password: currentPassword,
-                    streamType: currentQuality
+                    streamType: P4P.streamMain
                 )
 
                 guard c.connect(timeout: 30.0) else {
@@ -171,6 +193,7 @@ struct ContentView: View {
                     decoder.decode(data)
                     DispatchQueue.main.async {
                         bytesReceived = c.bytesReceived
+                        streamMetadata.update(from: frame)
                     }
                 }
 
@@ -196,6 +219,7 @@ struct ContentView: View {
         isConnected = false
         streamStart = nil
         bytesReceived = 0
+        streamMetadata = StreamMetadata()
         status = "Disconnected"
 
         displayLayer.controlTimebase = nil
@@ -221,6 +245,69 @@ struct ContentView: View {
             return String(format: "%.1f MB", Double(bytes) / 1_000_000)
         } else {
             return String(format: "%.2f GB", Double(bytes) / 1_000_000_000)
+        }
+    }
+}
+
+private struct StreamMetadata {
+    var signalBars: Int?
+    var batteryPercent: Int?
+    var isCharging = false
+    var activeViewers: Int?
+
+    var signalLevel: Double {
+        guard let signalBars else { return 0.0 }
+        return Double(signalBars) / 5.0
+    }
+
+    var signalOpacity: Double {
+        signalBars == nil ? 0.35 : 1.0
+    }
+
+    var signalTechnologyText: String? {
+        signalBars == nil ? nil : "4G"
+    }
+
+    var signalAccessibilityText: String {
+        guard let signalBars else { return "Cell signal unknown" }
+        return "4G signal \(signalBars) of 5"
+    }
+
+    var batteryText: String {
+        guard let batteryPercent else { return "--%" }
+        return "\(batteryPercent)%"
+    }
+
+    var viewersText: String {
+        guard let activeViewers else { return "--" }
+        return String(activeViewers)
+    }
+
+    var batterySystemImage: String {
+        guard let batteryPercent else { return "battery.0" }
+        if isCharging { return "battery.100.bolt" }
+        switch batteryPercent {
+        case 76...:
+            return "battery.100"
+        case 51...75:
+            return "battery.75"
+        case 26...50:
+            return "battery.50"
+        case 1...25:
+            return "battery.25"
+        default:
+            return "battery.0"
+        }
+    }
+
+    mutating func update(from frame: AVFrame) {
+        activeViewers = frame.activeViewers
+        if let batteryPercent = frame.batteryPercent {
+            self.batteryPercent = batteryPercent
+            isCharging = frame.isCharging ?? false
+        }
+        if let cellularSignalBars = frame.cellularSignalBars {
+            signalBars = cellularSignalBars
         }
     }
 }

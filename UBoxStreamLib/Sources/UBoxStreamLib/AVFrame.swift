@@ -26,6 +26,38 @@ public struct AVFrame {
 
     public var isIFrame: Bool { (flags & 0x01) != 0 }
 
+    public var activeViewers: Int {
+        Int(onlineNum & 0x0f)
+    }
+
+    public var batteryPercent: Int? {
+        guard hasBatteryStatus else { return nil }
+        return Int(statusWord & 0x007f)
+    }
+
+    public var isCharging: Bool? {
+        guard hasBatteryStatus else { return nil }
+        return (statusWord & 0x0100) == 0x0100
+    }
+
+    public var cellularSignalBars: Int? {
+        // UBIA embeds cellular signal in vendor SEI payloads. H.264 and H.265
+        // place the same status marker at slightly different offsets.
+        if payloadByte(at: 4) == 0x06,
+           payloadByte(at: 5) == 0xf0,
+           let rawSignal = payloadByte(at: 16) {
+            return Self.cellularSignalBars(from: rawSignal)
+        }
+
+        if payloadByte(at: 4) == 0x4e,
+           payloadByte(at: 6) == 0xf0,
+           let rawSignal = payloadByte(at: 17) {
+            return Self.cellularSignalBars(from: rawSignal)
+        }
+
+        return nil
+    }
+
     public var isVideo: Bool {
         [P4P.codecVideoH264, P4P.codecVideoH265,
          P4P.codecVideoMPEG4, P4P.codecVideoMJPEG].contains(codecID)
@@ -60,5 +92,35 @@ public struct AVFrame {
             timestamp: header.uint32LE(at: 12),
             data: data
         )
+    }
+
+    private var hasBatteryStatus: Bool {
+        (varbit & 0x80) == 0x80
+    }
+
+    private var statusWord: UInt16 {
+        UInt16(bitPattern: temperature)
+    }
+
+    private func payloadByte(at offset: Int) -> UInt8? {
+        guard data.count > offset else { return nil }
+        return data[data.startIndex + offset]
+    }
+
+    private static func cellularSignalBars(from rawSignal: UInt8) -> Int? {
+        switch rawSignal {
+        case 1:
+            return 1
+        case 2:
+            return 2
+        case 3:
+            return 3
+        case 4:
+            return 4
+        case 5, 6:
+            return 5
+        default:
+            return nil
+        }
     }
 }

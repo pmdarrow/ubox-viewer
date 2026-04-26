@@ -172,7 +172,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\n# Only install Release builds — Debug builds use Xcode Previews stubs\n# that won't launch from Finder/Dock without Xcode injecting them.\nif [ \"${CONFIGURATION}\" != \"Release\" ]; then\n  echo \"note: skipping install for ${CONFIGURATION} (only Release is installed)\"\n  exit 0\nfi\nDEST=\"/Applications/${PRODUCT_NAME}.app\"\nSRC=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}\"\nif [ ! -d \"${SRC}\" ]; then\n  echo \"warning: build product not found at ${SRC}, skipping install\"\n  exit 0\nfi\nrm -rf \"${DEST}\"\ncp -R \"${SRC}\" \"${DEST}\"\n# Ad-hoc sign — macOS launchd refuses to spawn unsigned apps from /Applications.\ncodesign --force --deep --sign - \"${DEST}\" >/dev/null 2>&1 || true\necho \"Installed ${DEST}\"\n";
+			shellScript = "set -e\nDEST=\"/Applications/${PRODUCT_NAME}.app\"\nSRC=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}\"\nif [ ! -d \"${SRC}\" ]; then\n  echo \"warning: build product not found at ${SRC}, skipping install\"\n  exit 0\nfi\nrm -rf \"${DEST}\"\ncp -R \"${SRC}\" \"${DEST}\"\n# Ad-hoc sign so macOS can launch the copied app from /Applications.\ncodesign --force --deep --sign - \"${DEST}\" >/dev/null 2>&1 || true\necho \"Installed ${CONFIGURATION} build to ${DEST}\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
