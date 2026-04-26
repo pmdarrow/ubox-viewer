@@ -61,6 +61,19 @@ public final class P4PClient {
     private var sessionToken: UInt32 = 0
     private var kcpConv: UInt32 = 0
 
+    // Relay session mode (mirrors the camera library's state machine).
+    // mode 6 = relay tunnel pending (right after stream response, before
+    //         camera's knock-relay-response is acked). KCP traffic uses
+    //         sub=0x24 and the session-derived avchn id at header offset 12.
+    // mode 7 = relay tunnel confirmed (we sent knock-ack 0x130d). All
+    //         subsequent KCP traffic uses sub=0x21 and h12=0.
+    private var sessionMode: Int = 6
+    // Stream-response source — the wakeup relay that responded to our stream
+    // request. Mode-6 alive goes here (matching mobile), and mode-6 KCP data
+    // also arrives from this same address before the data path migrates to
+    // the control endpoint after knock-ack.
+    private var streamResponseSource: Endpoint?
+
     private var kcpRecvBuf: [UInt32: Data] = [:]
     private var kcpNextSN: UInt32 = 0
     private var kcpUNA: UInt32 = 0
@@ -124,6 +137,20 @@ public final class P4PClient {
             return false
         }
 
+        // Pre-emptively log out from any stale session on these relays.
+        // Previous app instances may have died without sending a logout,
+        // leaving phantom sessions in the relay's session table that wedge
+        // new connections at sn≈256. Blasting a logout to every relay
+        // server clears any prior state for our UID.
+        let preLogout = P4P.buildRelayLogout(
+            uid: uid, password: password, username: username
+        )
+        for srv in relayServers {
+            socket.send(preLogout, to: srv)
+        }
+        Log.info("Sent pre-emptive logout to \(relayServers.count) relays to clear stale state")
+        Thread.sleep(forTimeInterval: 0.2)
+
         Log.info("Phase 2: Sending relay wakeup to \(relayServers.count) servers...")
         let wakeupPkt = P4P.buildRelayWakeupRequest(uid: uid)
         let wakeupStart = Date()
@@ -183,17 +210,27 @@ public final class P4PClient {
             return false
         }
 
-        // Mobile app capture shows: after the relay stream response, the
-        // client sends a single alive packet to bind its UDP endpoint to the
-        // session, and the camera then begins KCP streaming. No knock packet
-        // is sent in relay mode. Sending the wrong handshake here puts the
-        // camera in a state where it streams data but ignores our ACKs, so
-        // its send window fills at ~256 packets and the stream stalls.
-        Log.info("Phase 4: Sending alive to bind endpoint \(endpoint)")
-        let alivePkt = P4P.buildAlive(
-            sessionToken: sessionToken, conv: kcpConv
+        // Mobile app capture (side-by-side with our viewer) shows:
+        //   * KNOCK (cmd=0x130b) → control endpoint (body's relayIP)
+        //   * Mode-6 ALIVE (cmd=0x1405 sub=0x24) → STREAM RESPONSE SOURCE
+        //     (the wakeup relay that responded — same place mode-6 data
+        //     arrives from). NOT the control endpoint.
+        // Sending the mode-6 alive to the control endpoint instead leaves
+        // the data-plane relay unbound: it keeps streaming through itself
+        // even after knock-ack, our mode-7 acks (sent to control endpoint)
+        // never reach the camera's KCP state, and the camera fires
+        // knock-pings followed by a freeze at sn≈256.
+        let aliveTarget = streamResponseSource ?? endpoint
+        Log.info("Phase 4: knock → \(endpoint), mode-6 alive → \(aliveTarget)")
+        let knockPkt = P4P.buildKnock(
+            uid: uid, password: password, username: username,
+            sessionToken: sessionToken, kcpConv: kcpConv
         )
-        socket.send(alivePkt, to: endpoint)
+        socket.send(knockPkt, to: endpoint)
+        let alivePkt = P4P.buildAlive(
+            sessionToken: sessionToken, conv: kcpConv, mode: sessionMode
+        )
+        socket.send(alivePkt, to: aliveTarget)
 
         state = .connected
         Log.info("Connected! Relay endpoint: \(endpoint), conv=0x\(String(kcpConv, radix: 16))")
@@ -270,7 +307,7 @@ public final class P4PClient {
             let now = Date()
             if now.timeIntervalSince(lastKeepalive) > keepaliveInterval {
                 let alivePkt = P4P.buildAlive(
-                    sessionToken: sessionToken, conv: kcpConv
+                    sessionToken: sessionToken, conv: kcpConv, mode: sessionMode
                 )
                 if let endpoint = relayEndpoint {
                     socket.send(alivePkt, to: endpoint)
@@ -312,14 +349,32 @@ public final class P4PClient {
         }
 
         // Tell the relay to stop sending video and close the session.
+        // Send to BOTH the data plane (where data flows) and the control plane
+        // (body's relay endpoint) — the camera tracks state on both paths.
+        // Send to all wakeup relays too, since the relay infrastructure
+        // distributes session state across multiple servers.
         stopVideo()
-        if let endpoint = relayEndpoint {
-            let logout = P4P.buildRelayLogout()
-            socket.send(logout, to: endpoint)
-            // Send logout multiple times to improve delivery reliability (UDP).
-            socket.send(logout, to: endpoint)
-            socket.send(logout, to: endpoint)
-            Log.info("Sent relay logout request")
+        let logout = P4P.buildRelayLogout(
+            uid: uid, password: password, username: username,
+            sessionToken: sessionToken, kcpConv: kcpConv
+        )
+        var logoutTargets: [Endpoint] = []
+        if let dp = dataEndpoint { logoutTargets.append(dp) }
+        if let cp = relayEndpoint, cp != dataEndpoint { logoutTargets.append(cp) }
+        for srv in relayServers where !logoutTargets.contains(srv) {
+            logoutTargets.append(srv)
+        }
+        for target in logoutTargets {
+            socket.send(logout, to: target)
+            socket.send(logout, to: target)
+            socket.send(logout, to: target)
+        }
+        if !logoutTargets.isEmpty {
+            Log.info("Sent relay logout to \(logoutTargets.count) endpoint(s)")
+            // UDP is fire-and-forget; sleep briefly so the kernel flushes
+            // before the socket is closed (especially during app termination
+            // where the process may exit immediately after).
+            Thread.sleep(forTimeInterval: 0.15)
         }
 
         videoFile?.closeFile()
@@ -345,8 +400,10 @@ public final class P4PClient {
         relayServers = []
         relayEndpoint = nil
         dataEndpoint = nil
+        streamResponseSource = nil
         sessionToken = 0
         kcpConv = 0
+        sessionMode = 6
         kcpRecvBuf.removeAll()
         kcpNextSN = 0
         kcpUNA = 0
@@ -407,7 +464,7 @@ public final class P4PClient {
             // sending data but ignores our ACKs.
             if let endpoint = self.relayEndpoint {
                 let alivePkt = P4P.buildAlive(
-                    sessionToken: self.sessionToken, conv: self.kcpConv
+                    sessionToken: self.sessionToken, conv: self.kcpConv, mode: self.sessionMode
                 )
                 self.socket.send(alivePkt, to: endpoint)
             }
@@ -424,9 +481,13 @@ public final class P4PClient {
                 self.recvAndDispatch(timeout: 0.05)
 
                 let now = Date()
-                if now.timeIntervalSince(lastKeepalive) > 5.0 {
+                // Mobile sends alive every ~1s. Sending every 5s like a
+                // generic UDP keepalive triggers the relay/camera to send
+                // knock-pings (probing whether we're alive), then to wedge
+                // the session at sn≈256.
+                if now.timeIntervalSince(lastKeepalive) > 1.0 {
                     let alivePkt = P4P.buildAlive(
-                        sessionToken: self.sessionToken, conv: self.kcpConv
+                        sessionToken: self.sessionToken, conv: self.kcpConv, mode: self.sessionMode
                     )
                     if let endpoint = self.relayEndpoint {
                         self.socket.send(alivePkt, to: endpoint)
@@ -642,15 +703,28 @@ public final class P4PClient {
         case P4P.cmdKnock:
             Log.debug("Knock response from \(addr)")
         case P4P.cmdKnockRelayR:
-            Log.debug("Knock relay response from \(addr)")
+            if sessionMode != 7 {
+                sessionMode = 7
+                // Mobile sends alive(mode-7) immediately followed by knock-ack
+                // to the control endpoint; both must use sub=0x21.
+                let alive7 = P4P.buildAlive(
+                    sessionToken: sessionToken, conv: kcpConv, mode: 7
+                )
+                socket.send(alive7, to: addr)
+                let ackPkt = P4P.buildKnockAck(
+                    sessionToken: sessionToken, kcpConv: kcpConv
+                )
+                socket.send(ackPkt, to: addr)
+                Log.info("Mode 7: sent alive+knock-ack to \(addr) (sub=0x21, h12=0)")
+            }
         case P4P.cmdKnockPing:
+            // Mobile capture shows 0 knock-pings during healthy sessions; they
+            // arrive only when the relay thinks something is wrong. Replying
+            // with a full knock packet re-triggers the relay's knock cycle and
+            // appears to wedge the session at sn≈256. Mobile doesn't respond
+            // at all — just log and ignore.
             knockPingCount += 1
-            Log.debug("Knock ping from \(addr), responding")
-            let knockPkt = P4P.buildKnock(
-                uid: uid, password: password, username: username,
-                sessionToken: sessionToken, kcpConv: kcpConv
-            )
-            socket.send(knockPkt, to: addr)
+            Log.debug("Knock ping from \(addr), ignoring")
         default:
             unknownCmdCount += 1
             if unknownCmdCount <= 10 {
@@ -738,6 +812,10 @@ public final class P4PClient {
             relayEndpoint = Endpoint(
                 host: result.relayIP, port: result.relayPort
             )
+            // Capture the stream-response source — that's where mode-6 alive
+            // and initial KCP data flow. Mobile capture confirms mobile's
+            // mode-6 alive goes to this address, NOT the body's relayIP.
+            streamResponseSource = addr
             sessionToken = result.sessionToken
             kcpConv = result.kcpConv
             state = .knocking
@@ -837,21 +915,17 @@ public final class P4PClient {
             if dataEndpoint != addr {
                 Log.info("Data-plane endpoint: \(addr) (control plane is \(relayEndpoint?.description ?? "nil"))")
                 dataEndpoint = addr
-                // Re-send the alive to the data-plane address so the camera
-                // binds our session there too. The response body's IP is a
-                // hole-punched/P2P address which often differs from where the
-                // relay actually streams data; without rebinding to the data
-                // path, the camera ignores our ACKs and snd_una stays at 0,
-                // freezing at sn=256 (the initial cwnd burst).
-                let alivePkt = P4P.buildAlive(
-                    sessionToken: sessionToken, conv: kcpConv
-                )
-                socket.send(alivePkt, to: addr)
-                // Also keep relayEndpoint in sync so keepalives use the path
-                // we know is reaching the camera.
-                relayEndpoint = addr
             }
-            sendBatchedAcks(pendingAcks, to: addr)
+            // Mobile capture shows ack destination depends on session mode:
+            //   mode 6 (pre-knock-ack):   acks → data source (mirror back)
+            //   mode 7 (post-knock-ack):  acks → relayEndpoint (control plane)
+            // Sending mode-7 acks back to the data source freezes the session
+            // at sn≈256; the camera's snd_una only advances when acks arrive
+            // at the control plane after the tunnel is confirmed.
+            let ackDest = (sessionMode == 7 && relayEndpoint != nil)
+                ? relayEndpoint!
+                : addr
+            sendBatchedAcks(pendingAcks, to: ackDest)
         }
     }
 
@@ -861,13 +935,17 @@ public final class P4PClient {
         var totalKCP = Data()
         for ack in acks { totalKCP.append(ack) }
 
+        // Mode 6 (pre-knock-ack): sub=0x24, h12=high u16 of sessionToken.
+        // Mode 7 (post-knock-ack): sub=0x21, h12=0.
+        let subValue: UInt16 = (sessionMode == 7) ? P4P.subKnock : P4P.subRelay
+        let h12Value: UInt16 = (sessionMode == 7) ? 0 : UInt16(sessionToken >> 16)
         var pkt = Data(count: 16)
         pkt.writeUInt16LE(P4P.magic, at: 0)
         pkt.writeUInt16LE(P4P.version, at: 2)
         pkt.writeUInt16LE(UInt16(totalKCP.count), at: 4)
         pkt.writeUInt16LE(P4P.cmdKCPAck, at: 8)
-        pkt.writeUInt16LE(P4P.subRelay, at: 10)
-        pkt.writeUInt16LE(UInt16(sessionToken >> 16), at: 12)
+        pkt.writeUInt16LE(subValue, at: 10)
+        pkt.writeUInt16LE(h12Value, at: 12)
         pkt.append(totalKCP)
 
         let encrypted = Crypto.encode(pkt)

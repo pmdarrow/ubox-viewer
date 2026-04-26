@@ -35,8 +35,10 @@ public enum P4P {
     static let cmdLanSearchReq: UInt16 = 0x1301
     static let cmdLanSearchRsp: UInt16 = 0x1304
     static let cmdKnock: UInt16        = 0x1403
-    static let cmdKnockRelay: UInt16   = 0x130b
-    static let cmdKnockRelayR: UInt16  = 0x130c
+    static let cmdKnockRelay: UInt16   = 0x130b   // outbound knock to camera
+    static let cmdKnockRelayR: UInt16  = 0x130c   // inbound: camera's knock response
+    static let cmdKnockAck: UInt16     = 0x130d   // outbound: confirms knock-r received,
+                                                  // transitions session to mode 7
     static let cmdKnockPing: UInt16    = 0x130e
     // Outbound (client→camera). Camera's receiver dispatches 0x1405 to
     // p4p_device_handle_alive; 0x1406 is the camera's reply cmd. The relay
@@ -217,12 +219,29 @@ extension P4P {
         return Crypto.encode(pkt)
     }
 
-    /// Build a keepalive packet.
-    static func buildAlive(
-        sessionToken: UInt32 = 0, conv: UInt32 = 0
+    /// Build a knock-ack (52 bytes). Sent in response to cmdKnockRelayR
+    /// to confirm the relay tunnel — transitions session into mode 7,
+    /// after which all KCP traffic uses sub=0x21 and h12=0.
+    /// Body layout: 28 bytes zero + sessionToken + kcpConv = 36 bytes.
+    static func buildKnockAck(
+        sessionToken: UInt32, kcpConv: UInt32
     ) -> Data {
-        var pkt = makePacket(size: 36, cmd: cmdAlive, sub: subRelay)
-        pkt.writeUInt16LE(UInt16(sessionToken >> 16), at: 12)
+        var pkt = makePacket(size: 52, cmd: cmdKnockAck, sub: subKnock)
+        pkt.writeUInt32LE(sessionToken, at: 0x2c)
+        pkt.writeUInt32LE(kcpConv, at: 0x30)
+        return Crypto.encode(pkt)
+    }
+
+    /// Build a keepalive packet.
+    /// - mode 6 (pre-knock-ack): outer sub=0x24, h12=high u16 of sessionToken.
+    /// - mode 7 (post-knock-ack): outer sub=0x21, h12=0.
+    static func buildAlive(
+        sessionToken: UInt32 = 0, conv: UInt32 = 0, mode: Int = 6
+    ) -> Data {
+        let sub: UInt16 = (mode == 7) ? subKnock : subRelay
+        let h12: UInt16 = (mode == 7) ? 0 : UInt16(sessionToken >> 16)
+        var pkt = makePacket(size: 36, cmd: cmdAlive, sub: sub)
+        pkt.writeUInt16LE(h12, at: 12)
         // Body layout (matches mobile app capture):
         //   [16..20] zero
         //   [20..24] sessionToken (LE)
@@ -262,9 +281,21 @@ extension P4P {
         return Crypto.encode(pkt)
     }
 
-    /// Build a relay logout request to cleanly close the session.
-    static func buildRelayLogout() -> Data {
-        let pkt = makePacket(size: 48, cmd: cmdRlyLogoutReq, sub: subRelay)
+    /// Build a relay logout request (84 bytes, same structure as knock so the
+    /// relay can identify which session to terminate).
+    /// An empty-bodied logout is silently ignored by the relay since it can't
+    /// match it to any session — and the orphaned session keeps wedging new
+    /// connections from the same UID.
+    static func buildRelayLogout(
+        uid: String, password: String, username: String = "admin",
+        sessionToken: UInt32 = 0, kcpConv: UInt32 = 0
+    ) -> Data {
+        var pkt = makePacket(size: 84, cmd: cmdRlyLogoutReq, sub: subRelay)
+        pkt.writeASCII(uid, at: 0x10, maxLength: 20)
+        pkt.writeASCII(password, at: 0x24, maxLength: 16)
+        pkt.writeUInt32LE(sessionToken, at: 0x3c)
+        pkt.writeUInt32LE(kcpConv, at: 0x40)
+        pkt.writeASCII(username, at: 0x44, maxLength: 16)
         return Crypto.encode(pkt)
     }
 }
