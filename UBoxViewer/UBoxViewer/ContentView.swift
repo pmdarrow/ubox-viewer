@@ -15,11 +15,18 @@ final class StreamManager {
 }
 
 struct ContentView: View {
+    private static let continueWatchingInterval: TimeInterval = 300
+    private static let continueWatchingResponseWindow: TimeInterval = 20
+
     @State private var uid = Credentials.load()["UBOX_UID"] ?? ""
     @State private var password = Credentials.load()["UBOX_PASSWORD"] ?? ""
     @State private var status = "Disconnected"
     @State private var isConnected = false
     @State private var isConnecting = false
+    @State private var nextContinuePromptAt: Date?
+    @State private var continuePromptDeadline: Date?
+    @State private var continuePromptWorkItem: DispatchWorkItem?
+    @State private var continueTimeoutWorkItem: DispatchWorkItem?
 
     @State private var decoder = H265Decoder()
     @State private var displayLayer = AVSampleBufferDisplayLayer()
@@ -45,6 +52,10 @@ struct ContentView: View {
                     }
                     .padding(16)
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+
+                if continuePromptDeadline != nil {
+                    continueWatchingPrompt
                 }
             }
 
@@ -112,9 +123,98 @@ struct ContentView: View {
         }
     }
 
+    private var continueWatchingPrompt: some View {
+        TimelineView(.animation) { context in
+            let timeRemaining = continuePromptDeadline.map {
+                max(0, $0.timeIntervalSince(context.date))
+            } ?? Self.continueWatchingResponseWindow
+            let remaining = Int(ceil(timeRemaining))
+            let progress = min(max(timeRemaining / Self.continueWatchingResponseWindow, 0), 1)
+
+            ZStack {
+                Color.black.opacity(0.14)
+
+                VStack(spacing: 0) {
+                    Text("Still watching?")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.bottom, 10)
+
+                    Text("To save camera battery and data,\nwe'll disconnect in \(remaining) \(remaining == 1 ? "second" : "seconds").")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .lineSpacing(3)
+                        .multilineTextAlignment(.center)
+                        .padding(.bottom, 18)
+
+                    Button {
+                        continueWatching()
+                    } label: {
+                        Text("Continue watching")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(minWidth: 200)
+                    }
+                    .buttonStyle(SolidProminentButtonStyle())
+                    .keyboardShortcut(.defaultAction)
+                    .padding(.bottom, 20)
+
+                    continueWatchingProgressBar(progress: progress)
+                }
+                .padding(.horizontal, 26)
+                .padding(.top, 20)
+                .padding(.bottom, 24)
+                .frame(maxWidth: 306)
+                .background {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.black.opacity(0.12))
+                    }
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(.white.opacity(0.42), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.34), radius: 14, x: 0, y: 7)
+                .scaleEffect(0.85)
+                .padding(.horizontal, 20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            }
+        }
+    }
+
+    private func continueWatchingProgressBar(progress: Double) -> some View {
+        GeometryReader { proxy in
+            let fillWidth = proxy.size.width * progress
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(0.36))
+
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 1.0, green: 0.70, blue: 0.08),
+                                Color(red: 1.0, green: 0.53, blue: 0.00)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: fillWidth)
+            }
+        }
+        .frame(height: 7)
+        .animation(.linear(duration: 0.2), value: progress)
+    }
+
     private func connect() {
         isConnecting = true
         status = "Connecting..."
+        clearContinueWatchingPrompt()
         let currentUID = uid
         let currentPassword = password
 
@@ -201,7 +301,9 @@ struct ContentView: View {
                     StreamManager.shared.client = c
                     isConnected = true
                     isConnecting = false
-                    streamStart = Date()
+                    let now = Date()
+                    streamStart = now
+                    scheduleContinueWatchingPrompt(from: now)
                     bytesReceived = 0
                     status = "Connected"
                 }
@@ -214,17 +316,65 @@ struct ContentView: View {
         }
     }
 
-    private func disconnect() {
+    private func disconnect(status newStatus: String = "Disconnected") {
         StreamManager.shared.disconnect()
         isConnected = false
+        isConnecting = false
         streamStart = nil
         bytesReceived = 0
         streamMetadata = StreamMetadata()
-        status = "Disconnected"
+        status = newStatus
+        clearContinueWatchingPrompt()
 
         displayLayer.controlTimebase = nil
         displayLayer.flushAndRemoveImage()
         decoder.reset()
+    }
+
+    private func continueWatching() {
+        scheduleContinueWatchingPrompt(from: Date())
+        status = "Connected"
+    }
+
+    private func scheduleContinueWatchingPrompt(from date: Date) {
+        clearContinueWatchingPrompt()
+        let promptAt = date.addingTimeInterval(Self.continueWatchingInterval)
+        nextContinuePromptAt = promptAt
+
+        let workItem = DispatchWorkItem {
+            guard isConnected, nextContinuePromptAt == promptAt else { return }
+            let deadline = Date().addingTimeInterval(Self.continueWatchingResponseWindow)
+            continuePromptDeadline = deadline
+            scheduleContinueWatchingTimeout(at: deadline)
+        }
+        continuePromptWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0, promptAt.timeIntervalSinceNow),
+            execute: workItem
+        )
+    }
+
+    private func scheduleContinueWatchingTimeout(at deadline: Date) {
+        continueTimeoutWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem {
+            guard isConnected, continuePromptDeadline == deadline else { return }
+            disconnect(status: "Disconnected automatically")
+        }
+        continueTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0, deadline.timeIntervalSinceNow),
+            execute: workItem
+        )
+    }
+
+    private func clearContinueWatchingPrompt() {
+        continuePromptWorkItem?.cancel()
+        continueTimeoutWorkItem?.cancel()
+        continuePromptWorkItem = nil
+        continueTimeoutWorkItem = nil
+        nextContinuePromptAt = nil
+        continuePromptDeadline = nil
     }
 
     private func formatDuration(_ interval: TimeInterval) -> String {
@@ -338,5 +488,33 @@ private enum Credentials {
             }
         }
         return result
+    }
+}
+
+private struct SolidProminentButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.white)
+            .padding(.vertical, 14)
+            .padding(.horizontal, 24)
+            .background {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.accentColor)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [.white.opacity(0.18), .clear],
+                                startPoint: .top,
+                                endPoint: .center
+                            )
+                        )
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.white.opacity(0.18), lineWidth: 0.5)
+                }
+            }
+            .brightness(configuration.isPressed ? -0.06 : 0)
+            .opacity(configuration.isPressed ? 0.92 : 1.0)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
