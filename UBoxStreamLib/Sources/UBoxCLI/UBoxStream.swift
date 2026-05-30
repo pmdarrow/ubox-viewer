@@ -31,9 +31,9 @@ struct UBoxStream: ParsableCommand {
 
     @Option(
         name: [.customShort("q"), .long],
-        help: "Stream quality: hd or sd (default: hd)"
+        help: "Stream quality: hd or sd (default: sd)"
     )
-    var quality: StreamQuality = .hd
+    var quality: StreamQuality = .sd
 
     @Option(
         name: [.customShort("o"), .long],

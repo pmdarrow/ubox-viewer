@@ -179,7 +179,7 @@ extension P4P {
     static func buildRelayStreamRequest(
         uid: String, password: String, username: String = "admin",
         localIP: String = "0.0.0.0", localPort: UInt16 = 0,
-        randomID: UInt32 = 0, streamType: UInt8 = streamMain
+        randomID: UInt32 = 0, streamType: UInt8 = streamSub
     ) -> Data {
         var pkt = makePacket(size: 124, cmd: cmdRlyStreamReq, sub: subRelay)
         pkt[16] = 0x01
@@ -261,7 +261,7 @@ extension P4P {
     ///   - byte 2: stream_type (0=SD, 1=HD, 2=LF_SD, 3=LF_HD)
     ///   - byte 3: codec (1 = H.265)
     static func buildAVStartVideo(
-        channel: UInt8 = 0, streamType: UInt8 = streamMain,
+        channel: UInt8 = 0, streamType: UInt8 = streamSub,
         mode: Int = 7, sessionIndex: UInt8 = 0,
         sessionByte: UInt8 = 0, sessionToken: UInt32 = 0
     ) -> Data {
@@ -282,7 +282,7 @@ extension P4P {
 
     /// Build an AV control packet to stop video streaming.
     static func buildAVStopVideo(
-        channel: UInt8 = 0, streamType: UInt8 = streamMain,
+        channel: UInt8 = 0, streamType: UInt8 = streamSub,
         mode: Int = 7, sessionIndex: UInt8 = 0,
         sessionByte: UInt8 = 0, sessionToken: UInt32 = 0
     ) -> Data {

@@ -104,7 +104,7 @@ public final class P4PClient {
     public init(
         uid: String, password: String,
         username: String = "admin",
-        streamType: UInt8 = P4P.streamMain
+        streamType: UInt8 = P4P.streamSub
     ) throws {
         self.uid = uid
         self.password = password

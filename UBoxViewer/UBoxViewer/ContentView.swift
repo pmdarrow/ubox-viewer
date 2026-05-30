@@ -20,6 +20,7 @@ struct ContentView: View {
 
     @State private var uid = Credentials.load()["UBOX_UID"] ?? ""
     @State private var password = Credentials.load()["UBOX_PASSWORD"] ?? ""
+    @State private var quality: UInt8 = P4P.streamSub
     @State private var status = "Disconnected"
     @State private var isConnected = false
     @State private var isConnecting = false
@@ -60,6 +61,16 @@ struct ContentView: View {
             }
 
             HStack(spacing: 12) {
+                Picker("", selection: $quality) {
+                    Text("HD").tag(P4P.streamMain)
+                    Text("SD").tag(P4P.streamSub)
+                }
+                .pickerStyle(.segmented)
+                .disabled(isConnected || isConnecting)
+                .accessibilityLabel("Stream quality")
+                .help("Stream quality")
+                .fixedSize()
+
                 Button(isConnected ? "Disconnect" : "Connect") {
                     if isConnected {
                         disconnect()
@@ -217,6 +228,7 @@ struct ContentView: View {
         clearContinueWatchingPrompt()
         let currentUID = uid
         let currentPassword = password
+        let currentQuality = quality
 
         var timebase: CMTimebase?
         CMTimebaseCreateWithSourceClock(
@@ -269,7 +281,7 @@ struct ContentView: View {
                 let c = try P4PClient(
                     uid: currentUID,
                     password: currentPassword,
-                    streamType: P4P.streamMain
+                    streamType: currentQuality
                 )
 
                 guard c.connect(timeout: 30.0) else {
